@@ -1,0 +1,112 @@
+/**
+ * Home Assistant Client
+ * Handles WebSocket connection to Home Assistant for Voice Assistant
+ */
+
+#ifndef HA_CLIENT_H
+#define HA_CLIENT_H
+
+#include "esp_err.h"
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief Initialize Home Assistant client
+ *
+ * This function:
+ * - Resolves HA hostname via mDNS (kira.local)
+ * - Establishes WebSocket connection over HTTPS
+ * - Authenticates using long-lived access token
+ * - Subscribes to events
+ *
+ * @return
+ *    - ESP_OK: Successfully connected to Home Assistant
+ *    - ESP_FAIL: Connection failed
+ */
+esp_err_t ha_client_init(void);
+
+/**
+ * @brief Check if connected to Home Assistant
+ *
+ * @return true if WebSocket is connected and authenticated
+ */
+bool ha_client_is_connected(void);
+
+/**
+ * @brief Send text to Home Assistant Assist Pipeline
+ *
+ * @param text Text to process (voice transcription)
+ * @return ESP_OK on success
+ */
+esp_err_t ha_client_send_text(const char *text);
+
+/**
+ * @brief Start voice assistant conversation
+ *
+ * Initiates a new conversation with HA Assist Pipeline.
+ * After this, audio can be streamed.
+ *
+ * @return conversation_id (allocated string, caller must free)
+ */
+char* ha_client_start_conversation(void);
+
+/**
+ * @brief Stream audio data to Home Assistant
+ *
+ * @param audio_data PCM audio buffer
+ * @param length Length of audio data in bytes
+ * @param conversation_id Conversation ID from start_conversation
+ * @return ESP_OK on success
+ */
+esp_err_t ha_client_stream_audio(const uint8_t *audio_data, size_t length, const char *conversation_id);
+
+/**
+ * @brief End audio streaming (signals recording is complete)
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t ha_client_end_audio_stream(void);
+
+/**
+ * @brief Callback for conversation responses from HA
+ *
+ * @param response_text TTS response text from Home Assistant
+ * @param conversation_id Associated conversation ID
+ */
+typedef void (*ha_conversation_callback_t)(const char *response_text, const char *conversation_id);
+
+/**
+ * @brief Callback for TTS audio data from HA
+ *
+ * @param audio_data TTS audio chunk (MP3/WAV format)
+ * @param length Length of audio data in bytes
+ */
+typedef void (*ha_tts_audio_callback_t)(const uint8_t *audio_data, size_t length);
+
+/**
+ * @brief Register callback for conversation responses
+ *
+ * @param callback Function to call when HA sends conversation response
+ */
+void ha_client_register_conversation_callback(ha_conversation_callback_t callback);
+
+/**
+ * @brief Register callback for TTS audio data
+ *
+ * @param callback Function to call when HA sends TTS audio chunk
+ */
+void ha_client_register_tts_audio_callback(ha_tts_audio_callback_t callback);
+
+/**
+ * @brief Stop Home Assistant client and disconnect
+ */
+void ha_client_stop(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* HA_CLIENT_H */
