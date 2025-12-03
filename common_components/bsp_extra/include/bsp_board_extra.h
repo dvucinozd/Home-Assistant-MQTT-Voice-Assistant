@@ -22,7 +22,7 @@ extern "C" {
 #define CODEC_DEFAULT_SAMPLE_RATE           (16000)
 #define CODEC_DEFAULT_BIT_WIDTH             (16)
 #define CODEC_DEFAULT_ADC_VOLUME            (40.0)  // Increased from 24.0 for better VAD detection
-#define CODEC_DEFAULT_CHANNEL               (2)
+#define CODEC_DEFAULT_CHANNEL               (1)     // MONO - required by ESP-SR WakeNet
 #define CODEC_DEFAULT_VOLUME                (60)
 
 #define BSP_LCD_BACKLIGHT_BRIGHTNESS_MAX    (95)
