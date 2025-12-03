@@ -251,17 +251,30 @@ static void mqtt_status_update_task(void *arg)
 static void on_wake_word_detected(wwd_event_t event, void *user_data)
 {
     if (event == WWD_EVENT_DETECTED) {
-        ESP_LOGI(TAG, "🎤 Wake word detected - starting voice pipeline!");
+        ESP_LOGI(TAG, "🎤 Wake word detected!");
 
         // Stop wake word detection
         wwd_stop();
 
         // Stop audio capture (from wake word mode)
         audio_capture_stop();
-        ESP_LOGI(TAG, "Wake word mode stopped - switching to recording mode");
+        ESP_LOGI(TAG, "Wake word mode stopped");
 
         // Small delay to ensure capture task fully exits
-        vTaskDelay(pdMS_TO_TICKS(150));
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        // Play beep tone as audio feedback (800Hz, 120ms, 40% volume)
+        ESP_LOGI(TAG, "🔊 Playing wake word confirmation beep...");
+        extern esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration, uint8_t volume);
+        esp_err_t beep_ret = beep_tone_play(800, 120, 40);
+        if (beep_ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to play beep tone: %s", esp_err_to_name(beep_ret));
+        }
+
+        // Small delay after beep before starting recording
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        ESP_LOGI(TAG, "Starting voice pipeline...");
 
         // Start voice assistant pipeline
         test_audio_streaming();
