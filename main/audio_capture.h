@@ -25,12 +25,29 @@ typedef enum {
 } audio_capture_vad_event_t;
 
 /**
+ * Audio capture mode
+ */
+typedef enum {
+    CAPTURE_MODE_IDLE,          // Not capturing
+    CAPTURE_MODE_WAKE_WORD,     // Continuous wake word detection (lightweight)
+    CAPTURE_MODE_RECORDING      // Active recording with VAD for STT (intensive)
+} audio_capture_mode_t;
+
+/**
  * @brief Callback for captured audio data
  *
  * @param audio_data PCM audio buffer (16-bit, 16kHz, mono)
  * @param length Length of audio data in bytes
  */
 typedef void (*audio_capture_callback_t)(const uint8_t *audio_data, size_t length);
+
+/**
+ * @brief Callback for wake word detection audio feed
+ *
+ * @param audio_data PCM audio samples (int16_t array)
+ * @param samples Number of samples
+ */
+typedef void (*audio_capture_wwd_callback_t)(const int16_t *audio_data, size_t samples);
 
 /**
  * @brief Callback for VAD events
@@ -82,6 +99,24 @@ void audio_capture_disable_vad(void);
  * @brief Reset VAD state
  */
 void audio_capture_reset_vad(void);
+
+/**
+ * @brief Start wake word detection mode
+ *
+ * Starts continuous audio capture and feeds to wake word detector.
+ * Lightweight mode - only feeds audio to WWD without VAD or streaming.
+ *
+ * @param wwd_callback Function to call with audio for wake word detection
+ * @return ESP_OK on success
+ */
+esp_err_t audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t wwd_callback);
+
+/**
+ * @brief Get current capture mode
+ *
+ * @return Current audio capture mode
+ */
+audio_capture_mode_t audio_capture_get_mode(void);
 
 #ifdef __cplusplus
 }

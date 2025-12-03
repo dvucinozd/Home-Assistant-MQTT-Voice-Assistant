@@ -10,6 +10,9 @@
 #include "esp_check.h"
 #include "esp_spiffs.h"
 #include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
 #include "nvs_flash.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
@@ -23,6 +26,7 @@
 #include "ha_client.h"
 #include "tts_player.h"
 #include "audio_capture.h"
+#include "wwd.h"
 
 #define TAG             "mp3_player"
 #define MUSIC_DIR       "/sdcard/music"
@@ -83,6 +87,29 @@ static char *pipeline_handler = NULL;
 static int audio_chunks_sent = 0;
 static bool pipeline_active = false;
 
+// Forward declarations
+static void test_audio_streaming(void);
+
+// Wake word detection callback
+static void on_wake_word_detected(wwd_event_t event, void *user_data)
+{
+    if (event == WWD_EVENT_DETECTED) {
+        ESP_LOGI(TAG, "🎤 Wake word detected - starting voice pipeline!");
+
+        // Stop wake word detection
+        wwd_stop();
+
+        // Start voice assistant pipeline
+        test_audio_streaming();
+    }
+}
+
+// Wrapper function to feed audio to wake word detector
+static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples)
+{
+    wwd_feed_audio(audio_data, samples);
+}
+
 static void vad_event_handler(audio_capture_vad_event_t event)
 {
     switch (event) {
@@ -110,6 +137,11 @@ static void vad_event_handler(audio_capture_vad_event_t event)
                 pipeline_handler = NULL;
             }
             audio_chunks_sent = 0;
+
+            // Resume wake word detection after TTS completes
+            ESP_LOGI(TAG, "🔄 Resuming wake word detection...");
+            wwd_start();
+            audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
             break;
     }
 }
@@ -226,6 +258,27 @@ void app_main(void)
         ESP_LOGI(TAG, "Audio capture initialized successfully");
     }
 
+    // Note: SD card not mounted - using WakeNet models from flash instead
+    // The ESP32-P4 Function EV Board's SD card slot uses SDIO pins that are
+    // already occupied by the ESP32-C6 WiFi module. WakeNet9 models are loaded
+    // directly from the esp-sr managed component directory in flash memory.
+    ESP_LOGI(TAG, "WakeNet models will be loaded from flash (managed_components)");
+
+    // Initialize Wake Word Detection
+    ESP_LOGI(TAG, "Initializing Wake Word Detection...");
+    wwd_config_t wwd_config = wwd_get_default_config();
+    wwd_config.callback = on_wake_word_detected;
+    wwd_config.user_data = NULL;
+    wwd_config.detection_threshold = 0.5f;  // Normal sensitivity
+    esp_err_t wwd_ret = wwd_init(&wwd_config);
+
+    if (wwd_ret != ESP_OK) {
+        ESP_LOGE(TAG, "Wake Word Detection initialization failed!");
+        ESP_LOGW(TAG, "Falling back to VAD-based activation");
+    } else {
+        ESP_LOGI(TAG, "Wake Word Detection initialized successfully!");
+    }
+
     // Initialize WiFi via ESP32-C6 (SDIO)
     ESP_LOGI(TAG, "Initializing WiFi (ESP32-C6 via SDIO)...");
     ret = wifi_init_sta();
@@ -242,11 +295,29 @@ void app_main(void)
             ha_client_register_conversation_callback(conversation_response_handler);
             ha_client_register_tts_audio_callback(tts_audio_handler);
 
-            // Wait a bit, then start audio streaming test
-            ESP_LOGI(TAG, "Will start audio streaming test in 5 seconds...");
-            ESP_LOGI(TAG, "Please speak into the microphone!");
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            test_audio_streaming();
+            // Start wake word detection if initialized successfully
+            if (wwd_ret == ESP_OK && wwd_is_running() == false) {
+                ESP_LOGI(TAG, "========================================");
+                ESP_LOGI(TAG, "🎙️  Voice Assistant Ready!");
+                ESP_LOGI(TAG, "Wake Word Detection enabled");
+                ESP_LOGI(TAG, "Say the wake word to activate!");
+                ESP_LOGI(TAG, "Wake word: 'Hi ESP' (or your chosen model)");
+                ESP_LOGI(TAG, "========================================");
+
+                // Start wake word detection
+                wwd_start();
+                audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+            } else {
+                // Fallback to VAD-based activation
+                ESP_LOGI(TAG, "========================================");
+                ESP_LOGI(TAG, "🎙️  Voice Assistant Ready!");
+                ESP_LOGI(TAG, "Using VAD-based activation");
+                ESP_LOGI(TAG, "System will start recording in 5 seconds...");
+                ESP_LOGI(TAG, "Just start speaking - VAD will detect automatically!");
+                ESP_LOGI(TAG, "========================================");
+                vTaskDelay(pdMS_TO_TICKS(5000));
+                test_audio_streaming();
+            }
         } else {
             ESP_LOGW(TAG, "Home Assistant connection failed");
         }

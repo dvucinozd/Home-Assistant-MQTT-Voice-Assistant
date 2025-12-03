@@ -19,9 +19,11 @@ static const char *TAG = "audio_capture";
 static TaskHandle_t capture_task_handle = NULL;
 static audio_capture_callback_t capture_callback = NULL;
 static audio_capture_vad_callback_t vad_callback = NULL;
+static audio_capture_wwd_callback_t wwd_callback = NULL;
 static bool is_capturing = false;
 static bool vad_enabled = false;
 static vad_handle_t vad_handle = NULL;
+static audio_capture_mode_t capture_mode = CAPTURE_MODE_IDLE;
 
 /**
  * Capture task - continuously reads audio from I2S using BSP functions
@@ -52,7 +54,18 @@ static void capture_task(void *arg)
         if (ret == ESP_OK && bytes_read > 0) {
             size_t num_samples = bytes_read / sizeof(int16_t);
 
-            // Process through VAD if enabled
+            // MODE 1: Wake Word Detection Mode (lightweight)
+            if (capture_mode == CAPTURE_MODE_WAKE_WORD) {
+                // Feed audio to wake word detector callback
+                if (wwd_callback) {
+                    wwd_callback(buffer, num_samples);
+                }
+                // Skip VAD and streaming - just listen for wake word
+                chunk_count++;
+                continue;
+            }
+
+            // MODE 2: Recording Mode (intensive) - Process through VAD if enabled
             if (vad_enabled && vad_handle != NULL) {
                 vad_state_t vad_state = vad_process_frame(vad_handle, buffer, num_samples);
 
@@ -90,7 +103,7 @@ static void capture_task(void *arg)
                     if (buffer[i] != 0) non_zero++;
                     if (abs(buffer[i]) > peak) peak = abs(buffer[i]);
                 }
-                ESP_LOGD(TAG, "Chunk %d: samples=%d, peak=%ld, non-zero=%d",
+                ESP_LOGI(TAG, "🎤 Audio: chunk=%d, samples=%d, peak=%ld, non-zero=%d",
                          chunk_count, num_samples, peak, non_zero);
             }
             chunk_count++;
@@ -129,6 +142,7 @@ esp_err_t audio_capture_start(audio_capture_callback_t callback)
     }
 
     capture_callback = callback;
+    capture_mode = CAPTURE_MODE_RECORDING;  // Set to recording mode
     is_capturing = true;
 
     // Create capture task
@@ -151,6 +165,8 @@ void audio_capture_stop(void)
 
     is_capturing = false;
     capture_callback = NULL;
+    wwd_callback = NULL;
+    capture_mode = CAPTURE_MODE_IDLE;
 
     // Wait for task to finish
     if (capture_task_handle != NULL) {
@@ -213,4 +229,40 @@ void audio_capture_reset_vad(void)
         vad_reset(vad_handle);
         ESP_LOGD(TAG, "VAD reset");
     }
+}
+
+esp_err_t audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t wwd_cb)
+{
+    if (is_capturing) {
+        ESP_LOGW(TAG, "Already capturing");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!wwd_cb) {
+        ESP_LOGE(TAG, "WWD callback required");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Starting wake word detection mode");
+
+    wwd_callback = wwd_cb;
+    capture_mode = CAPTURE_MODE_WAKE_WORD;
+    is_capturing = true;
+
+    // Create capture task
+    BaseType_t ret = xTaskCreate(capture_task, "audio_capture", 4096, NULL, 5, &capture_task_handle);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create capture task");
+        is_capturing = false;
+        capture_mode = CAPTURE_MODE_IDLE;
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Audio capture started (Wake Word Mode)");
+    return ESP_OK;
+}
+
+audio_capture_mode_t audio_capture_get_mode(void)
+{
+    return capture_mode;
 }

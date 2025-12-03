@@ -4,6 +4,7 @@ idf_component_register(SRCS "mp3_player.c"
                             "tts_player.c"
                             "audio_capture.c"
                             "vad.c"
+                            "wwd.c"
                     INCLUDE_DIRS "."
-                    REQUIRES espressif__esp_websocket_client espressif__mdns json espressif__esp32_p4_function_ev_board bsp_extra chmorgan__esp-libhelix-mp3
+                    REQUIRES espressif__esp_websocket_client espressif__mdns json espressif__esp32_p4_function_ev_board bsp_extra chmorgan__esp-libhelix-mp3 espressif__esp-sr
                     PRIV_REQUIRES esp_wifi driver nvs_flash esp_netif esp_event spiffs fatfs esp_http_client)
