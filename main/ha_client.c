@@ -283,12 +283,12 @@ static void download_tts_audio(const char *url)
         return;
     }
 
-    // Build full URL
+    // Build full URL - use HA_HOST (IP) instead of HA_HOSTNAME for compatibility
     char full_url[512];
     if (HA_USE_SSL) {
-        snprintf(full_url, sizeof(full_url), "https://%s:%d%s", HA_HOSTNAME, HA_PORT, url);
+        snprintf(full_url, sizeof(full_url), "https://%s:%d%s", HA_HOST, HA_PORT, url);
     } else {
-        snprintf(full_url, sizeof(full_url), "http://%s:%d%s", HA_HOSTNAME, HA_PORT, url);
+        snprintf(full_url, sizeof(full_url), "http://%s:%d%s", HA_HOST, HA_PORT, url);
     }
 
     ESP_LOGI(TAG, "Downloading TTS audio from: %s", full_url);

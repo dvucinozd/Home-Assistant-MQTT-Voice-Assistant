@@ -27,6 +27,8 @@
 #include "tts_player.h"
 #include "audio_capture.h"
 #include "wwd.h"
+#include "mqtt_ha.h"
+#include "config.h"
 
 #define TAG             "mp3_player"
 #define MUSIC_DIR       "/sdcard/music"
@@ -89,6 +91,69 @@ static bool pipeline_active = false;
 
 // Forward declarations
 static void test_audio_streaming(void);
+static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples);
+
+// MQTT entity callback handlers
+static void mqtt_wwd_switch_callback(const char *entity_id, const char *payload)
+{
+    ESP_LOGI(TAG, "MQTT: WWD switch = %s", payload);
+
+    if (strcmp(payload, "ON") == 0) {
+        wwd_start();
+        audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+        mqtt_ha_update_switch("wwd_enabled", true);
+        ESP_LOGI(TAG, "Wake Word Detection enabled via MQTT");
+    } else {
+        wwd_stop();
+        audio_capture_stop();
+        mqtt_ha_update_switch("wwd_enabled", false);
+        ESP_LOGI(TAG, "Wake Word Detection disabled via MQTT");
+    }
+}
+
+static void mqtt_restart_callback(const char *entity_id, const char *payload)
+{
+    ESP_LOGI(TAG, "MQTT: Restart button pressed!");
+    ESP_LOGI(TAG, "Restarting in 2 seconds...");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+}
+
+static void mqtt_test_tts_callback(const char *entity_id, const char *payload)
+{
+    ESP_LOGI(TAG, "MQTT: Test TTS button pressed!");
+    // TODO: Implement test TTS playback
+    ESP_LOGI(TAG, "Test TTS feature - not yet implemented");
+}
+
+// MQTT status update task
+static void mqtt_status_update_task(void *arg)
+{
+    while (1) {
+        if (mqtt_ha_is_connected()) {
+            // Update WiFi RSSI
+            // Note: Would need wifi_manager API to get RSSI
+            mqtt_ha_update_sensor("wifi_rssi", "-45");
+
+            // Update free memory
+            char mem_str[32];
+            uint32_t free_mem = esp_get_free_heap_size() / 1024; // KB
+            snprintf(mem_str, sizeof(mem_str), "%lu", (unsigned long)free_mem);
+            mqtt_ha_update_sensor("free_memory", mem_str);
+
+            // Update uptime
+            char uptime_str[32];
+            uint32_t uptime_sec = esp_log_timestamp() / 1000;
+            snprintf(uptime_str, sizeof(uptime_str), "%lu", (unsigned long)uptime_sec);
+            mqtt_ha_update_sensor("uptime", uptime_str);
+
+            // Update WWD state
+            mqtt_ha_update_switch("wwd_enabled", wwd_is_running());
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10000)); // Update every 10 seconds
+    }
+}
 
 // Wake word detection callback
 static void on_wake_word_detected(wwd_event_t event, void *user_data)
@@ -294,6 +359,54 @@ void app_main(void)
             // Register callbacks
             ha_client_register_conversation_callback(conversation_response_handler);
             ha_client_register_tts_audio_callback(tts_audio_handler);
+
+            // Initialize MQTT Home Assistant Discovery
+            ESP_LOGI(TAG, "Initializing MQTT Home Assistant Discovery...");
+            mqtt_ha_config_t mqtt_config = {
+                .broker_uri = MQTT_BROKER_URI,
+                .username = MQTT_USERNAME,
+                .password = MQTT_PASSWORD,
+                .client_id = MQTT_CLIENT_ID
+            };
+
+            ret = mqtt_ha_init(&mqtt_config);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "MQTT client initialized");
+
+                // Start MQTT client
+                ret = mqtt_ha_start();
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "MQTT client started");
+
+                    // Wait for MQTT connection
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+
+                    // Register entities with Home Assistant
+                    ESP_LOGI(TAG, "Registering Home Assistant entities...");
+
+                    // Sensors
+                    mqtt_ha_register_sensor("wifi_rssi", "WiFi Signal", "dBm", "signal_strength");
+                    mqtt_ha_register_sensor("free_memory", "Free Memory", "KB", NULL);
+                    mqtt_ha_register_sensor("uptime", "Uptime", "s", "duration");
+
+                    // Switches
+                    mqtt_ha_register_switch("wwd_enabled", "Wake Word Detection", mqtt_wwd_switch_callback);
+
+                    // Buttons
+                    mqtt_ha_register_button("restart", "Restart Device", mqtt_restart_callback);
+                    mqtt_ha_register_button("test_tts", "Test TTS", mqtt_test_tts_callback);
+
+                    ESP_LOGI(TAG, "Home Assistant entities registered");
+
+                    // Start MQTT status update task
+                    xTaskCreate(mqtt_status_update_task, "mqtt_status", 4096, NULL, 3, NULL);
+                    ESP_LOGI(TAG, "MQTT status update task started");
+                } else {
+                    ESP_LOGW(TAG, "Failed to start MQTT client");
+                }
+            } else {
+                ESP_LOGW(TAG, "Failed to initialize MQTT client");
+            }
 
             // Start wake word detection if initialized successfully
             if (wwd_ret == ESP_OK && wwd_is_running() == false) {
