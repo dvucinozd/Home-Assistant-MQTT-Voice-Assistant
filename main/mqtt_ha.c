@@ -313,7 +313,15 @@ esp_err_t mqtt_ha_register_switch(const char *entity_id, const char *name,
     build_command_topic(entity_id, command_topic, sizeof(command_topic));
     cJSON_AddStringToObject(config, "command_topic", command_topic);
 
-    return publish_discovery("switch", entity_id, config);
+    esp_err_t ret = publish_discovery("switch", entity_id, config);
+
+    // Subscribe to command topic if connected and callback is set
+    if (ret == ESP_OK && mqtt_connected && callback) {
+        esp_mqtt_client_subscribe(mqtt_client, command_topic, 0);
+        ESP_LOGI(TAG, "Subscribed to command topic: %s", command_topic);
+    }
+
+    return ret;
 }
 
 esp_err_t mqtt_ha_register_number(const char *entity_id, const char *name,
@@ -428,7 +436,15 @@ esp_err_t mqtt_ha_register_button(const char *entity_id, const char *name,
     build_command_topic(entity_id, command_topic, sizeof(command_topic));
     cJSON_AddStringToObject(config, "command_topic", command_topic);
 
-    return publish_discovery("button", entity_id, config);
+    esp_err_t ret = publish_discovery("button", entity_id, config);
+
+    // Subscribe to command topic if connected and callback is set
+    if (ret == ESP_OK && mqtt_connected && callback) {
+        esp_mqtt_client_subscribe(mqtt_client, command_topic, 0);
+        ESP_LOGI(TAG, "Subscribed to command topic: %s", command_topic);
+    }
+
+    return ret;
 }
 
 esp_err_t mqtt_ha_update_sensor(const char *entity_id, const char *value)

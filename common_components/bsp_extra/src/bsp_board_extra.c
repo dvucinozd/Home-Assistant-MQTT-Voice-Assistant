@@ -120,7 +120,10 @@ esp_err_t bsp_extra_codec_open_playback(uint32_t rate, uint32_t bits_cfg, i2s_sl
     };
 
     if (play_dev_handle) {
+        // Close first to allow channel/rate reconfiguration
+        esp_codec_dev_close(play_dev_handle);
         ret = esp_codec_dev_open(play_dev_handle, &fs);
+        ESP_LOGI(TAG, "Setting codec to %d Hz, %d bits, %d channels", rate, bits_cfg, ch);
     }
 
     return ret;

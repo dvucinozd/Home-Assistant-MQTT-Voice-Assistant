@@ -105,6 +105,17 @@ void ha_client_register_tts_audio_callback(ha_tts_audio_callback_t callback);
  */
 void ha_client_stop(void);
 
+/**
+ * @brief Request TTS for test message
+ *
+ * Sends a conversation/process request to HA to synthesize test audio.
+ * The TTS audio will be delivered via the registered TTS audio callback.
+ *
+ * @param text Text to synthesize (e.g., "Test audio output")
+ * @return ESP_OK on success
+ */
+esp_err_t ha_client_request_tts(const char *text);
+
 #ifdef __cplusplus
 }
 #endif

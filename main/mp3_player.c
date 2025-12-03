@@ -122,8 +122,19 @@ static void mqtt_restart_callback(const char *entity_id, const char *payload)
 static void mqtt_test_tts_callback(const char *entity_id, const char *payload)
 {
     ESP_LOGI(TAG, "MQTT: Test TTS button pressed!");
-    // TODO: Implement test TTS playback
-    ESP_LOGI(TAG, "Test TTS feature - not yet implemented");
+
+    if (ha_client_is_connected()) {
+        ESP_LOGI(TAG, "Requesting test TTS audio...");
+        // Use a valid intent/question that HA will understand
+        esp_err_t ret = ha_client_request_tts("Koliko je sati?");
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Test TTS request sent successfully");
+        } else {
+            ESP_LOGE(TAG, "Failed to send test TTS request");
+        }
+    } else {
+        ESP_LOGW(TAG, "Cannot test TTS - not connected to Home Assistant");
+    }
 }
 
 // MQTT status update task

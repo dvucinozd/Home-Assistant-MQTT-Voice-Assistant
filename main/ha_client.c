@@ -605,6 +605,47 @@ void ha_client_register_tts_audio_callback(ha_tts_audio_callback_t callback)
     ESP_LOGI(TAG, "TTS audio callback registered");
 }
 
+esp_err_t ha_client_request_tts(const char *text)
+{
+    if (!ha_client_is_connected()) {
+        ESP_LOGW(TAG, "Cannot request TTS - not connected");
+        return ESP_FAIL;
+    }
+
+    if (text == NULL || strlen(text) == 0) {
+        ESP_LOGW(TAG, "Invalid TTS text");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Build assist_pipeline/run message with text input (bypassing STT)
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "id", message_id++);
+    cJSON_AddStringToObject(root, "type", "assist_pipeline/run");
+
+    // Start from intent stage (skip STT) and end at TTS
+    cJSON_AddStringToObject(root, "start_stage", "intent");
+    cJSON_AddStringToObject(root, "end_stage", "tts");
+
+    // Input object with text
+    cJSON *input = cJSON_CreateObject();
+    cJSON_AddStringToObject(input, "text", text);
+    cJSON_AddItemToObject(root, "input", input);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    if (json_str == NULL) {
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Requesting TTS: %s", json_str);
+    int ret = esp_websocket_client_send_text(ws_client, json_str, strlen(json_str), portMAX_DELAY);
+
+    free(json_str);
+    cJSON_Delete(root);
+
+    return (ret >= 0) ? ESP_OK : ESP_FAIL;
+}
+
 void ha_client_stop(void)
 {
     if (ws_client) {
