@@ -142,10 +142,13 @@ esp_err_t audio_capture_start(audio_capture_callback_t callback)
     }
 
     // Reset codec to microphone configuration (16kHz MONO)
-    extern esp_err_t bsp_extra_codec_open_record(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch);
-    esp_err_t codec_ret = bsp_extra_codec_open_record(16000, 16, I2S_SLOT_MODE_MONO);
+    // Use set_fs to properly close both playback and record channels
+    extern esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch);
+    esp_err_t codec_ret = bsp_extra_codec_set_fs(16000, 16, I2S_SLOT_MODE_MONO);
     if (codec_ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to reset codec for recording: %s", esp_err_to_name(codec_ret));
+    } else {
+        ESP_LOGI(TAG, "Codec reset to 16kHz MONO for recording");
     }
 
     capture_callback = callback;
@@ -254,8 +257,9 @@ esp_err_t audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t wwd_cb
 
     // Reset codec to microphone configuration (16kHz MONO)
     // This is critical after TTS playback which uses 24kHz STEREO
-    extern esp_err_t bsp_extra_codec_open_record(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch);
-    esp_err_t codec_ret = bsp_extra_codec_open_record(16000, 16, I2S_SLOT_MODE_MONO);
+    // Use set_fs to properly close both playback and record channels
+    extern esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch);
+    esp_err_t codec_ret = bsp_extra_codec_set_fs(16000, 16, I2S_SLOT_MODE_MONO);
     if (codec_ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to reset codec for microphone: %s", esp_err_to_name(codec_ret));
     } else {
