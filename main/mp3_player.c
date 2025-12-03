@@ -90,9 +90,17 @@ static int audio_chunks_sent = 0;
 static bool pipeline_active = false;
 static int warmup_chunks_skip = 0;  // Skip first N chunks after wake word
 
+// Dynamic configuration variables (adjustable via MQTT)
+static uint32_t vad_threshold = 180;           // Speech energy threshold (50-300)
+static uint32_t vad_silence_duration = 1800;   // Silence duration in ms (1000-3000)
+static uint32_t vad_min_speech = 200;          // Min speech duration in ms (100-500)
+static uint32_t vad_max_recording = 7000;      // Max recording duration in ms (5000-10000)
+static float wwd_threshold = 0.5f;             // Wake word detection threshold (0.3-0.9)
+
 // Forward declarations
 static void test_audio_streaming(void);
 static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples);
+static void on_wake_word_detected(wwd_event_t event, void *user_data);
 
 // MQTT entity callback handlers
 static void mqtt_wwd_switch_callback(const char *entity_id, const char *payload)
@@ -138,6 +146,67 @@ static void mqtt_test_tts_callback(const char *entity_id, const char *payload)
     }
 }
 
+static void mqtt_vad_threshold_callback(const char *entity_id, const char *payload)
+{
+    float value = atof(payload);
+    vad_threshold = (uint32_t)value;
+    ESP_LOGI(TAG, "MQTT: VAD threshold updated to %lu", vad_threshold);
+    mqtt_ha_update_number("vad_threshold", (float)vad_threshold);
+}
+
+static void mqtt_vad_silence_callback(const char *entity_id, const char *payload)
+{
+    float value = atof(payload);
+    vad_silence_duration = (uint32_t)value;
+    ESP_LOGI(TAG, "MQTT: VAD silence duration updated to %lums", vad_silence_duration);
+    mqtt_ha_update_number("vad_silence_duration", (float)vad_silence_duration);
+}
+
+static void mqtt_vad_min_speech_callback(const char *entity_id, const char *payload)
+{
+    float value = atof(payload);
+    vad_min_speech = (uint32_t)value;
+    ESP_LOGI(TAG, "MQTT: VAD min speech updated to %lums", vad_min_speech);
+    mqtt_ha_update_number("vad_min_speech", (float)vad_min_speech);
+}
+
+static void mqtt_vad_max_recording_callback(const char *entity_id, const char *payload)
+{
+    float value = atof(payload);
+    vad_max_recording = (uint32_t)value;
+    ESP_LOGI(TAG, "MQTT: VAD max recording updated to %lums", vad_max_recording);
+    mqtt_ha_update_number("vad_max_recording", (float)vad_max_recording);
+}
+
+static void mqtt_wwd_threshold_callback(const char *entity_id, const char *payload)
+{
+    wwd_threshold = atof(payload);
+    ESP_LOGI(TAG, "MQTT: WWD threshold updated to %.2f", wwd_threshold);
+
+    // Apply to WakeNet immediately if running
+    if (wwd_is_running()) {
+        wwd_stop();
+        audio_capture_stop();
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        wwd_config_t wwd_config = wwd_get_default_config();
+        wwd_config.callback = on_wake_word_detected;
+        wwd_config.user_data = NULL;
+        wwd_config.detection_threshold = wwd_threshold;
+
+        esp_err_t ret = wwd_init(&wwd_config);
+        if (ret == ESP_OK) {
+            wwd_start();
+            audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+            ESP_LOGI(TAG, "WWD restarted with new threshold");
+        } else {
+            ESP_LOGE(TAG, "Failed to restart WWD with new threshold");
+        }
+    }
+
+    mqtt_ha_update_number("wwd_threshold", wwd_threshold);
+}
+
 // MQTT status update task
 static void mqtt_status_update_task(void *arg)
 {
@@ -161,6 +230,17 @@ static void mqtt_status_update_task(void *arg)
 
             // Update WWD state
             mqtt_ha_update_switch("wwd_enabled", wwd_is_running());
+
+            // Update configuration numbers (only on first iteration or when changed)
+            static bool config_published = false;
+            if (!config_published) {
+                mqtt_ha_update_number("vad_threshold", (float)vad_threshold);
+                mqtt_ha_update_number("vad_silence_duration", (float)vad_silence_duration);
+                mqtt_ha_update_number("vad_min_speech", (float)vad_min_speech);
+                mqtt_ha_update_number("vad_max_recording", (float)vad_max_recording);
+                mqtt_ha_update_number("wwd_threshold", wwd_threshold);
+                config_published = true;
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(10000)); // Update every 10 seconds
@@ -264,18 +344,19 @@ static void test_audio_streaming(void)
     ESP_LOGI(TAG, "Starting Audio Streaming Test with VAD");
     ESP_LOGI(TAG, "========================================");
 
-    // Configure VAD with very sensitive settings for testing
+    // Configure VAD with dynamic settings (adjustable via MQTT)
     vad_config_t vad_config = {
         .sample_rate = 16000,
-        .speech_threshold = 100,         // Very sensitive (was 300)
-        .silence_duration_ms = 2000,     // 2s silence to end
-        .min_speech_duration_ms = 100,   // 100ms minimum
-        .max_recording_ms = 8000         // 8s max (will auto-stop)
+        .speech_threshold = vad_threshold,
+        .silence_duration_ms = vad_silence_duration,
+        .min_speech_duration_ms = vad_min_speech,
+        .max_recording_ms = vad_max_recording
     };
 
-    ESP_LOGI(TAG, "📊 VAD Config: threshold=%lu, silence=%lums, max=%lums",
+    ESP_LOGI(TAG, "📊 VAD Config: threshold=%lu, silence=%lums, min_speech=%lums, max=%lums",
              vad_config.speech_threshold,
              vad_config.silence_duration_ms,
+             vad_config.min_speech_duration_ms,
              vad_config.max_recording_ms);
 
     // Enable VAD with event callback
@@ -361,7 +442,8 @@ void app_main(void)
     wwd_config_t wwd_config = wwd_get_default_config();
     wwd_config.callback = on_wake_word_detected;
     wwd_config.user_data = NULL;
-    wwd_config.detection_threshold = 0.5f;  // Normal sensitivity
+    wwd_config.detection_threshold = wwd_threshold;  // Dynamic threshold (adjustable via MQTT)
+    ESP_LOGI(TAG, "WWD threshold: %.2f, VAD threshold: %lu", wwd_threshold, vad_threshold);
     esp_err_t wwd_ret = wwd_init(&wwd_config);
 
     if (wwd_ret != ESP_OK) {
@@ -423,7 +505,21 @@ void app_main(void)
                     mqtt_ha_register_button("restart", "Restart Device", mqtt_restart_callback);
                     mqtt_ha_register_button("test_tts", "Test TTS", mqtt_test_tts_callback);
 
-                    ESP_LOGI(TAG, "Home Assistant entities registered");
+                    // Number controls for VAD tuning
+                    mqtt_ha_register_number("vad_threshold", "VAD Speech Threshold",
+                                           50, 300, 10, NULL, mqtt_vad_threshold_callback);
+                    mqtt_ha_register_number("vad_silence_duration", "VAD Silence Duration",
+                                           1000, 3000, 100, "ms", mqtt_vad_silence_callback);
+                    mqtt_ha_register_number("vad_min_speech", "VAD Min Speech Duration",
+                                           100, 500, 50, "ms", mqtt_vad_min_speech_callback);
+                    mqtt_ha_register_number("vad_max_recording", "VAD Max Recording Duration",
+                                           5000, 10000, 500, "ms", mqtt_vad_max_recording_callback);
+
+                    // Number control for WWD tuning
+                    mqtt_ha_register_number("wwd_threshold", "WWD Detection Threshold",
+                                           0.3, 0.9, 0.05, NULL, mqtt_wwd_threshold_callback);
+
+                    ESP_LOGI(TAG, "Home Assistant entities registered (3 sensors, 1 switch, 2 buttons, 5 numbers)");
 
                     // Start MQTT status update task
                     xTaskCreate(mqtt_status_update_task, "mqtt_status", 4096, NULL, 3, NULL);
