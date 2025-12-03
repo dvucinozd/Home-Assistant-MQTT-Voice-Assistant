@@ -10,15 +10,16 @@ Lokalni glasovni asistent za Home Assistant baziran na ESP32-P4 platformi, imple
 **Target:** Home Assistant Voice Integration
 
 **Current Status:**
-- ✅ Audio capture (Microphone → PCM 16kHz)
+- ✅ **Wake Word Detection** - WakeNet9 "Hi ESP" model
+- ✅ Audio capture (Microphone → PCM 16kHz MONO)
 - ✅ WiFi connectivity (ESP32-C6 via SDIO)
 - ✅ Home Assistant WebSocket connection
-- ✅ Speech-to-Text streaming
-- ✅ Intent processing
-- ✅ Text-to-Speech MP3 download
-- ✅ MP3 decoding & playback (24kHz, clean audio)
+- ✅ Speech-to-Text streaming (Google AI STT)
+- ✅ Intent processing (Home Assistant Assist)
+- ✅ Text-to-Speech MP3 download & playback
 - ✅ Voice Activity Detection (VAD) with auto-stop
 - ✅ Codec mute/unmute management
+- ✅ Complete hands-free voice pipeline
 
 ---
 
@@ -131,6 +132,7 @@ esp32-p4-voice-assistant/
 │   ├── wifi_manager.c        # WiFi connectivity (ESP32-C6 SDIO)
 │   ├── ha_client.c           # Home Assistant WebSocket client
 │   ├── audio_capture.c       # Microphone input (ES8311) + VAD integration
+│   ├── wwd.c/wwd.h           # Wake Word Detection (WakeNet9)
 │   ├── tts_player.c          # TTS MP3 decoder & playback
 │   ├── vad.c/vad.h           # Voice Activity Detection (RMS energy)
 │   ├── config.h              # WiFi, HA credentials
@@ -185,12 +187,18 @@ esp32-p4-voice-assistant/
 - [x] Dynamic energy threshold (100)
 - [x] Configurable silence/speech detection
 
-### Phase 5: Advanced Features 🚧 TODO
-- [ ] Wake word detection (TensorFlow Lite Micro)
+### Phase 5: Wake Word Detection ✅ COMPLETED
+- [x] ESP-SR WakeNet9 integration
+- [x] Flash partition for model storage (512KB)
+- [x] "Hi ESP" wake word model
+- [x] Dual-mode audio capture (WWD + Recording)
+- [x] Automatic pipeline activation on wake word
+- [x] MONO audio configuration fix
+
+### Phase 6: Advanced Features 🚧 TODO
 - [ ] Audio preprocessing (noise reduction)
 - [ ] Acoustic Echo Cancellation (AEC)
 - [ ] Multi-wake word support
-- [ ] Croatian language support (STT/TTS)
 - [ ] Display integration (MIPI-DSI)
 - [ ] Battery monitoring
 - [ ] OTA updates
