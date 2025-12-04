@@ -33,6 +33,7 @@
 #include "audio_capture.h"
 #include "wwd.h"
 #include "mqtt_ha.h"
+#include "ota_update.h"
 #include "config.h"
 
 #define TAG             "mp3_player"
@@ -307,6 +308,74 @@ static void mqtt_test_tts_callback(const char *entity_id, const char *payload)
     }
 }
 
+// OTA URL storage (set via MQTT sensor update)
+static char ota_url_buffer[256] = "";
+
+// MQTT OTA Trigger Callback (reads URL from ota_url_buffer)
+static void mqtt_ota_trigger_callback(const char *entity_id, const char *payload)
+{
+    ESP_LOGI(TAG, "MQTT: OTA update button pressed");
+
+    if (strlen(ota_url_buffer) == 0) {
+        ESP_LOGE(TAG, "OTA update failed: No URL configured");
+        ESP_LOGI(TAG, "Set OTA URL via: mosquitto_pub -h <broker> -t 'homeassistant/sensor/esp32p4_voice/ota_url/state' -m 'http://your-server/firmware.bin'");
+        mqtt_ha_update_sensor("ota_status", "error: no URL");
+        return;
+    }
+
+    if (ota_update_is_running()) {
+        ESP_LOGW(TAG, "OTA update already in progress");
+        mqtt_ha_update_sensor("ota_status", "already running");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Starting OTA update from: %s", ota_url_buffer);
+
+    // Stop music if playing (OTA needs resources)
+    if (local_music_player_is_initialized() &&
+        local_music_player_get_state() == MUSIC_STATE_PLAYING) {
+        ESP_LOGI(TAG, "Stopping music for OTA update");
+        local_music_player_stop();
+    }
+
+    mqtt_ha_update_sensor("ota_status", "starting");
+
+    esp_err_t ret = ota_update_start(ota_url_buffer);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start OTA update");
+        mqtt_ha_update_sensor("ota_status", "failed to start");
+    }
+}
+
+// OTA Progress Callback
+static void ota_progress_callback(ota_state_t state, int progress, const char *message)
+{
+    ESP_LOGI(TAG, "OTA [%d%%]: %s", progress, message);
+
+    // Update MQTT sensors
+    char progress_str[8];
+    snprintf(progress_str, sizeof(progress_str), "%d", progress);
+    mqtt_ha_update_sensor("ota_progress", progress_str);
+
+    switch (state) {
+        case OTA_STATE_IDLE:
+            mqtt_ha_update_sensor("ota_status", "idle");
+            break;
+        case OTA_STATE_DOWNLOADING:
+            mqtt_ha_update_sensor("ota_status", "downloading");
+            break;
+        case OTA_STATE_VERIFYING:
+            mqtt_ha_update_sensor("ota_status", "verifying");
+            break;
+        case OTA_STATE_SUCCESS:
+            mqtt_ha_update_sensor("ota_status", "success");
+            break;
+        case OTA_STATE_FAILED:
+            mqtt_ha_update_sensor("ota_status", "failed");
+            break;
+    }
+}
+
 static void mqtt_vad_threshold_callback(const char *entity_id, const char *payload)
 {
     float value = atof(payload);
@@ -444,6 +513,20 @@ static void mqtt_status_update_task(void *arg)
                 mqtt_ha_update_sensor("music_state", "unavailable");
                 mqtt_ha_update_sensor("current_track", "N/A");
                 mqtt_ha_update_sensor("total_tracks", "0");
+            }
+
+            // Update OTA status
+            mqtt_ha_update_sensor("firmware_version", ota_update_get_current_version());
+            if (strlen(ota_url_buffer) > 0) {
+                mqtt_ha_update_sensor("ota_url", ota_url_buffer);
+            } else {
+                mqtt_ha_update_sensor("ota_url", "Not configured");
+            }
+            if (ota_update_is_running()) {
+                // Status is updated by OTA progress callback
+            } else {
+                mqtt_ha_update_sensor("ota_status", "idle");
+                mqtt_ha_update_sensor("ota_progress", "0");
             }
 
             // Update configuration numbers (only on first iteration or when changed)
@@ -650,6 +733,18 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
     ESP_LOGI(TAG, "NVS initialized");
 
+    // Initialize OTA update module
+    ESP_LOGI(TAG, "Initializing OTA update module...");
+    ret = ota_update_init();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "OTA module initialized - Version: %s", ota_update_get_current_version());
+
+        // Register OTA progress callback
+        ota_update_register_callback(ota_progress_callback);
+    } else {
+        ESP_LOGW(TAG, "OTA module initialization failed");
+    }
+
     // Initialize audio codec
     ESP_LOGI(TAG, "Initializing ES8311 audio codec...");
     ESP_ERROR_CHECK(bsp_extra_codec_init());
@@ -768,6 +863,15 @@ void app_main(void)
                     mqtt_ha_register_sensor("current_track", "Current Track", NULL, NULL);
                     mqtt_ha_register_sensor("total_tracks", "Total Tracks", NULL, NULL);
 
+                    // Sensors - OTA Update
+                    mqtt_ha_register_sensor("firmware_version", "Firmware Version", NULL, NULL);
+                    mqtt_ha_register_sensor("ota_status", "OTA Status", NULL, NULL);
+                    mqtt_ha_register_sensor("ota_progress", "OTA Progress", "%", NULL);
+                    mqtt_ha_register_sensor("ota_url", "OTA Update URL", NULL, NULL);
+
+                    // Button to trigger OTA update (reads URL from sensor)
+                    mqtt_ha_register_button("ota_trigger", "Trigger OTA Update", mqtt_ota_trigger_callback);
+
                     // Number controls for VAD tuning
                     mqtt_ha_register_number("vad_threshold", "VAD Speech Threshold",
                                            50, 300, 10, NULL, mqtt_vad_threshold_callback);
@@ -782,7 +886,7 @@ void app_main(void)
                     mqtt_ha_register_number("wwd_threshold", "WWD Detection Threshold",
                                            0.3, 0.9, 0.05, NULL, mqtt_wwd_threshold_callback);
 
-                    ESP_LOGI(TAG, "Home Assistant entities registered (9 sensors, 1 switch, 8 buttons, 5 numbers)");
+                    ESP_LOGI(TAG, "Home Assistant entities registered (13 sensors, 1 switch, 9 buttons, 5 numbers)");
 
                     // Start MQTT status update task
                     xTaskCreate(mqtt_status_update_task, "mqtt_status", 4096, NULL, 3, NULL);
@@ -793,6 +897,10 @@ void app_main(void)
             } else {
                 ESP_LOGW(TAG, "Failed to initialize MQTT client");
             }
+
+            // Mark OTA partition as valid (all systems initialized successfully)
+            ESP_LOGI(TAG, "All systems initialized - marking OTA partition as valid");
+            ota_update_mark_valid();
 
             // Start wake word detection if initialized successfully
             if (wwd_ret == ESP_OK && wwd_is_running() == false) {
