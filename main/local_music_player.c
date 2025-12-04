@@ -7,6 +7,7 @@
 #include "bsp_board_extra.h"
 #include "bsp/esp32_p4_function_ev_board.h"
 #include "file_iterator.h"
+#include "audio_player.h"
 #include "esp_log.h"
 #include <string.h>
 
@@ -206,10 +207,12 @@ esp_err_t local_music_player_stop(void)
 
     ESP_LOGI(TAG, "Stopping music playback");
 
-    // BSP doesn't have explicit stop, so we deinit and reinit
-    bsp_extra_player_del();
-    bsp_extra_player_init();
-    bsp_extra_player_register_callback(audio_player_callback, NULL);
+    // Use audio player stop (queues stop request)
+    esp_err_t ret = audio_player_stop();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to stop audio player");
+        return ret;
+    }
 
     player_state = MUSIC_STATE_STOPPED;
     current_track_index = -1;
@@ -233,8 +236,12 @@ esp_err_t local_music_player_pause(void)
 
     ESP_LOGI(TAG, "Pausing music playback");
 
-    // BSP audio player handles pause internally via codec
-    bsp_extra_codec_dev_stop();
+    // Use audio player pause (queues pause request)
+    esp_err_t ret = audio_player_pause();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to pause audio player");
+        return ret;
+    }
 
     player_state = MUSIC_STATE_PAUSED;
 
@@ -257,7 +264,12 @@ esp_err_t local_music_player_resume(void)
 
     ESP_LOGI(TAG, "Resuming music playback");
 
-    bsp_extra_codec_dev_resume();
+    // Use audio player resume (queues resume request)
+    esp_err_t ret = audio_player_resume();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to resume audio player");
+        return ret;
+    }
 
     player_state = MUSIC_STATE_PLAYING;
 
