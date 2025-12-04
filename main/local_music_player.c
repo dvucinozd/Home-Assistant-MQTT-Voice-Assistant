@@ -6,6 +6,7 @@
 #include "local_music_player.h"
 #include "bsp_board_extra.h"
 #include "bsp/esp32_p4_function_ev_board.h"
+#include "file_iterator.h"
 #include "esp_log.h"
 #include <string.h>
 
@@ -92,22 +93,15 @@ esp_err_t local_music_player_init(void)
     bsp_extra_player_register_callback(audio_player_callback, NULL);
 
     // Initialize file iterator for music directory
-    ret = bsp_extra_file_instance_init(MUSIC_DIR, &file_iterator);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize file iterator for %s: %s",
-                 MUSIC_DIR, esp_err_to_name(ret));
-        bsp_extra_player_del();
-        return ret;
-    }
-
+    file_iterator = file_iterator_new(MUSIC_DIR);
     if (file_iterator == NULL) {
-        ESP_LOGE(TAG, "File iterator is NULL");
+        ESP_LOGE(TAG, "Failed to initialize file iterator for %s", MUSIC_DIR);
         bsp_extra_player_del();
         return ESP_FAIL;
     }
 
     // Count total tracks
-    total_tracks = file_iterator->file_num;
+    total_tracks = file_iterator->count;
     ESP_LOGI(TAG, "Found %d music tracks in %s", total_tracks, MUSIC_DIR);
 
     if (total_tracks == 0) {
@@ -146,7 +140,11 @@ esp_err_t local_music_player_deinit(void)
     // Delete BSP audio player
     bsp_extra_player_del();
 
-    file_iterator = NULL;
+    // Delete file iterator
+    if (file_iterator) {
+        file_iterator_delete(file_iterator);
+        file_iterator = NULL;
+    }
     total_tracks = 0;
     current_track_index = -1;
     player_state = MUSIC_STATE_IDLE;
@@ -403,11 +401,11 @@ esp_err_t local_music_player_get_track_name(char *name, size_t max_len)
         return ESP_FAIL;
     }
 
-    if (file_iterator && file_iterator->file_name) {
+    if (file_iterator && file_iterator->list) {
         // Get filename from iterator
-        char **file_list = file_iterator->file_name;
-        if (file_list[current_track_index]) {
-            strncpy(name, file_list[current_track_index], max_len - 1);
+        const char *filename = file_iterator_get_name_from_index(file_iterator, current_track_index);
+        if (filename) {
+            strncpy(name, filename, max_len - 1);
             name[max_len - 1] = '\0';
             return ESP_OK;
         }

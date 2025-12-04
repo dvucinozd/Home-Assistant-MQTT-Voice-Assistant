@@ -36,40 +36,8 @@
 #include "config.h"
 
 #define TAG             "mp3_player"
-#define MUSIC_DIR       "/sdcard/music"
 #define BUTTON_IO_NUM   35
 #define BUTTON_ACTIVE_LEVEL   0
-
-file_iterator_instance_t *_file_iterator;
-static audio_player_cb_t audio_idle_callback = NULL;
-static QueueHandle_t event_queue;
-static SemaphoreHandle_t semph_event;
-int music_cnt = 0;
-int cnt = 0;
-
-static void audio_player_callback(audio_player_cb_ctx_t *ctx)
-{
-    ESP_LOGI(TAG,"audio_player_callback %d",ctx->audio_event);
-    if(ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN || ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_IDLE)
-        xSemaphoreGive(semph_event);
-        // xQueueSend(event_queue, &(ctx->audio_event), 0);
-}
-
-static void mp3_player_task(void *arg)
-{
-    audio_player_callback_event_t event;
-    while(true)
-    {
-        bsp_extra_player_play_index(_file_iterator,cnt);
-        cnt++;
-        if(cnt > music_cnt)
-            cnt = 0;
-        xSemaphoreTake(semph_event, portMAX_DELAY);
-    }
-
-    bsp_extra_player_del();
-    vTaskDelete(NULL);
-}
 
 static void conversation_response_handler(const char *response_text, const char *conversation_id)
 {
