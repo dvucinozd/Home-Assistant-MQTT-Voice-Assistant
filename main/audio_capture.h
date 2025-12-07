@@ -9,8 +9,8 @@
 
 #include "esp_err.h"
 #include "vad.h"
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,17 +20,17 @@ extern "C" {
  * VAD event types
  */
 typedef enum {
-    VAD_EVENT_SPEECH_START,  // Speech detected
-    VAD_EVENT_SPEECH_END,    // Speech ended (silence detected)
+  VAD_EVENT_SPEECH_START, // Speech detected
+  VAD_EVENT_SPEECH_END,   // Speech ended (silence detected)
 } audio_capture_vad_event_t;
 
 /**
  * Audio capture mode
  */
 typedef enum {
-    CAPTURE_MODE_IDLE,          // Not capturing
-    CAPTURE_MODE_WAKE_WORD,     // Continuous wake word detection (lightweight)
-    CAPTURE_MODE_RECORDING      // Active recording with VAD for STT (intensive)
+  CAPTURE_MODE_IDLE,      // Not capturing
+  CAPTURE_MODE_WAKE_WORD, // Continuous wake word detection (lightweight)
+  CAPTURE_MODE_RECORDING  // Active recording with VAD for STT (intensive)
 } audio_capture_mode_t;
 
 /**
@@ -39,7 +39,8 @@ typedef enum {
  * @param audio_data PCM audio buffer (16-bit, 16kHz, mono)
  * @param length Length of audio data in bytes
  */
-typedef void (*audio_capture_callback_t)(const uint8_t *audio_data, size_t length);
+typedef void (*audio_capture_callback_t)(const uint8_t *audio_data,
+                                         size_t length);
 
 /**
  * @brief Callback for wake word detection audio feed
@@ -47,7 +48,8 @@ typedef void (*audio_capture_callback_t)(const uint8_t *audio_data, size_t lengt
  * @param audio_data PCM audio samples (int16_t array)
  * @param samples Number of samples
  */
-typedef void (*audio_capture_wwd_callback_t)(const int16_t *audio_data, size_t samples);
+typedef void (*audio_capture_wwd_callback_t)(const int16_t *audio_data,
+                                             size_t samples);
 
 /**
  * @brief Callback for VAD events
@@ -88,7 +90,8 @@ void audio_capture_deinit(void);
  * @param callback Function to call on VAD events (optional)
  * @return ESP_OK on success
  */
-esp_err_t audio_capture_enable_vad(const vad_config_t *config, audio_capture_vad_callback_t callback);
+esp_err_t audio_capture_enable_vad(const vad_config_t *config,
+                                   audio_capture_vad_callback_t callback);
 
 /**
  * @brief Disable VAD
@@ -109,7 +112,8 @@ void audio_capture_reset_vad(void);
  * @param wwd_callback Function to call with audio for wake word detection
  * @return ESP_OK on success
  */
-esp_err_t audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t wwd_callback);
+esp_err_t
+audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t wwd_callback);
 
 /**
  * @brief Get current capture mode
@@ -117,6 +121,41 @@ esp_err_t audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t wwd_ca
  * @return Current audio capture mode
  */
 audio_capture_mode_t audio_capture_get_mode(void);
+
+/**
+ * @brief Enable AGC (Automatic Gain Control)
+ *
+ * @param target_level Target RMS amplitude (default: 4000)
+ * @return ESP_OK on success
+ */
+esp_err_t audio_capture_enable_agc(uint16_t target_level);
+
+/**
+ * @brief Disable AGC
+ */
+void audio_capture_disable_agc(void);
+
+/**
+ * @brief Check if AGC is enabled
+ *
+ * @return true if AGC is enabled
+ */
+bool audio_capture_is_agc_enabled(void);
+
+/**
+ * @brief Get current AGC gain
+ *
+ * @return Current gain multiplier (1.0 = no gain)
+ */
+float audio_capture_get_agc_gain(void);
+
+/**
+ * @brief Set AGC target level dynamically
+ *
+ * @param target_level New target RMS level
+ * @return ESP_OK on success
+ */
+esp_err_t audio_capture_set_agc_target(uint16_t target_level);
 
 #ifdef __cplusplus
 }

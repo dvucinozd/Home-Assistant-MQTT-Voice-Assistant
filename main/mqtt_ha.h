@@ -18,27 +18,29 @@ extern "C" {
  * MQTT Configuration
  */
 typedef struct {
-    const char *broker_uri;        // MQTT broker URI (e.g., "mqtt://homeassistant.local:1883")
-    const char *username;          // MQTT username (optional)
-    const char *password;          // MQTT password (optional)
-    const char *client_id;         // MQTT client ID
+  const char
+      *broker_uri; // MQTT broker URI (e.g., "mqtt://homeassistant.local:1883")
+  const char *username;  // MQTT username (optional)
+  const char *password;  // MQTT password (optional)
+  const char *client_id; // MQTT client ID
 } mqtt_ha_config_t;
 
 /**
  * Entity types supported by Home Assistant MQTT Discovery
  */
 typedef enum {
-    MQTT_HA_SENSOR,      // Read-only sensor (e.g., WiFi RSSI, uptime)
-    MQTT_HA_SWITCH,      // Binary switch (e.g., enable/disable WWD)
-    MQTT_HA_NUMBER,      // Number input (e.g., VAD threshold, mic gain)
-    MQTT_HA_SELECT,      // Dropdown selection (e.g., WWD threshold presets)
-    MQTT_HA_BUTTON       // Action button (e.g., restart, test TTS)
+  MQTT_HA_SENSOR, // Read-only sensor (e.g., WiFi RSSI, uptime)
+  MQTT_HA_SWITCH, // Binary switch (e.g., enable/disable WWD)
+  MQTT_HA_NUMBER, // Number input (e.g., VAD threshold, mic gain)
+  MQTT_HA_SELECT, // Dropdown selection (e.g., WWD threshold presets)
+  MQTT_HA_BUTTON  // Action button (e.g., restart, test TTS)
 } mqtt_ha_entity_type_t;
 
 /**
  * Command callback for entities (switch, number, select, button)
  */
-typedef void (*mqtt_ha_command_callback_t)(const char *entity_id, const char *payload);
+typedef void (*mqtt_ha_command_callback_t)(const char *entity_id,
+                                           const char *payload);
 
 /**
  * Initialize MQTT Home Assistant client
@@ -72,7 +74,7 @@ esp_err_t mqtt_ha_stop(void);
  * @return ESP_OK on success
  */
 esp_err_t mqtt_ha_register_sensor(const char *entity_id, const char *name,
-                                   const char *unit, const char *device_class);
+                                  const char *unit, const char *device_class);
 
 /**
  * Register a switch entity with Home Assistant
@@ -83,7 +85,7 @@ esp_err_t mqtt_ha_register_sensor(const char *entity_id, const char *name,
  * @return ESP_OK on success
  */
 esp_err_t mqtt_ha_register_switch(const char *entity_id, const char *name,
-                                   mqtt_ha_command_callback_t callback);
+                                  mqtt_ha_command_callback_t callback);
 
 /**
  * Register a number entity with Home Assistant
@@ -98,8 +100,9 @@ esp_err_t mqtt_ha_register_switch(const char *entity_id, const char *name,
  * @return ESP_OK on success
  */
 esp_err_t mqtt_ha_register_number(const char *entity_id, const char *name,
-                                   float min, float max, float step, const char *unit,
-                                   mqtt_ha_command_callback_t callback);
+                                  float min, float max, float step,
+                                  const char *unit,
+                                  mqtt_ha_command_callback_t callback);
 
 /**
  * Register a select entity with Home Assistant
@@ -111,7 +114,8 @@ esp_err_t mqtt_ha_register_number(const char *entity_id, const char *name,
  * @return ESP_OK on success
  */
 esp_err_t mqtt_ha_register_select(const char *entity_id, const char *name,
-                                   const char *options, mqtt_ha_command_callback_t callback);
+                                  const char *options,
+                                  mqtt_ha_command_callback_t callback);
 
 /**
  * Register a button entity with Home Assistant
@@ -122,7 +126,7 @@ esp_err_t mqtt_ha_register_select(const char *entity_id, const char *name,
  * @return ESP_OK on success
  */
 esp_err_t mqtt_ha_register_button(const char *entity_id, const char *name,
-                                   mqtt_ha_command_callback_t callback);
+                                  mqtt_ha_command_callback_t callback);
 
 /**
  * Update sensor state value
@@ -159,6 +163,26 @@ esp_err_t mqtt_ha_update_number(const char *entity_id, float value);
  * @return ESP_OK on success
  */
 esp_err_t mqtt_ha_update_select(const char *entity_id, const char *option);
+
+/**
+ * Register a text input entity with Home Assistant
+ *
+ * @param entity_id Unique entity ID (e.g., "ota_url")
+ * @param name Friendly name (e.g., "OTA Update URL")
+ * @param callback Command callback when text is submitted
+ * @return ESP_OK on success
+ */
+esp_err_t mqtt_ha_register_text(const char *entity_id, const char *name,
+                                mqtt_ha_command_callback_t callback);
+
+/**
+ * Update text state
+ *
+ * @param entity_id Entity ID
+ * @param value Current text value
+ * @return ESP_OK on success
+ */
+esp_err_t mqtt_ha_update_text(const char *entity_id, const char *value);
 
 /**
  * Check if MQTT is connected

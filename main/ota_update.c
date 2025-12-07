@@ -4,11 +4,11 @@
  */
 
 #include "ota_update.h"
-#include "esp_log.h"
-#include "esp_ota_ops.h"
+#include "esp_app_format.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
-#include "esp_app_format.h"
+#include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -27,290 +27,313 @@ static TaskHandle_t ota_task_handle = NULL;
 /**
  * @brief Notify progress callback
  */
-static void notify_progress(ota_state_t state, int progress, const char *message)
-{
-    ota_state = state;
-    ota_progress = progress;
+static void notify_progress(ota_state_t state, int progress,
+                            const char *message) {
+  ota_state = state;
+  ota_progress = progress;
 
-    if (progress_callback) {
-        progress_callback(state, progress, message);
-    }
+  if (progress_callback) {
+    progress_callback(state, progress, message);
+  }
 
-    ESP_LOGI(TAG, "[%d%%] %s", progress, message);
+  ESP_LOGI(TAG, "[%d%%] %s", progress, message);
 }
 
 /**
- * @brief HTTP event handler for OTA
+ * @brief OTA update task - Uses direct HTTP client + OTA ops for HTTP support
  */
-static esp_err_t ota_http_event_handler(esp_http_client_event_t *evt)
-{
-    switch (evt->event_id) {
-        case HTTP_EVENT_ERROR:
-            ESP_LOGE(TAG, "HTTP error");
-            break;
-        case HTTP_EVENT_ON_CONNECTED:
-            ESP_LOGI(TAG, "Connected to server");
-            break;
-        case HTTP_EVENT_HEADER_SENT:
-            ESP_LOGI(TAG, "Headers sent");
-            break;
-        case HTTP_EVENT_ON_HEADER:
-            ESP_LOGD(TAG, "Header: %s: %s", evt->header_key, evt->header_value);
-            break;
-        case HTTP_EVENT_ON_DATA:
-            ESP_LOGD(TAG, "Received %d bytes", evt->data_len);
-            break;
-        case HTTP_EVENT_ON_FINISH:
-            ESP_LOGI(TAG, "HTTP transfer finished");
-            break;
-        case HTTP_EVENT_DISCONNECTED:
-            ESP_LOGI(TAG, "Disconnected from server");
-            break;
-        default:
-            break;
+static void ota_update_task(void *pvParameter) {
+  const char *url = (const char *)pvParameter;
+  esp_err_t ret = ESP_FAIL;
+  esp_ota_handle_t ota_handle = 0;
+  const esp_partition_t *update_partition = NULL;
+  char *buffer = NULL;
+  const int buffer_size = 4096;
+  int total_read = 0;
+  int content_length = 0;
+
+  ESP_LOGI(TAG, "Starting OTA update from: %s", url);
+  notify_progress(OTA_STATE_DOWNLOADING, 0, "Starting OTA update");
+
+  // Allocate download buffer
+  buffer = malloc(buffer_size);
+  if (buffer == NULL) {
+    ESP_LOGE(TAG, "Failed to allocate buffer");
+    notify_progress(OTA_STATE_FAILED, 0, "Memory allocation failed");
+    goto ota_end;
+  }
+
+  // Configure HTTP client for plain HTTP
+  esp_http_client_config_t config = {
+      .url = url,
+      .timeout_ms = 30000,
+      .keep_alive_enable = true,
+  };
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (client == NULL) {
+    ESP_LOGE(TAG, "Failed to init HTTP client");
+    notify_progress(OTA_STATE_FAILED, 0, "HTTP client init failed");
+    goto ota_end;
+  }
+
+  // Open HTTP connection
+  ret = esp_http_client_open(client, 0);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(ret));
+    notify_progress(OTA_STATE_FAILED, 0, "HTTP connection failed");
+    esp_http_client_cleanup(client);
+    goto ota_end;
+  }
+
+  // Fetch headers
+  content_length = esp_http_client_fetch_headers(client);
+  if (content_length <= 0) {
+    ESP_LOGE(TAG, "Failed to fetch headers or empty response");
+    notify_progress(OTA_STATE_FAILED, 0, "Invalid HTTP response");
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    goto ota_end;
+  }
+
+  ESP_LOGI(TAG, "Image size: %d bytes", content_length);
+
+  // Get update partition
+  update_partition = esp_ota_get_next_update_partition(NULL);
+  if (update_partition == NULL) {
+    ESP_LOGE(TAG, "No OTA partition found");
+    notify_progress(OTA_STATE_FAILED, 0, "No OTA partition");
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    goto ota_end;
+  }
+
+  ESP_LOGI(TAG, "Writing to partition: %s at 0x%lx", update_partition->label,
+           update_partition->address);
+
+  // Begin OTA
+  ret =
+      esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "OTA begin failed: %s", esp_err_to_name(ret));
+    notify_progress(OTA_STATE_FAILED, 0, "OTA begin failed");
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    goto ota_end;
+  }
+
+  // Download and write firmware
+  while (total_read < content_length) {
+    int read_len = esp_http_client_read(client, buffer, buffer_size);
+    if (read_len < 0) {
+      ESP_LOGE(TAG, "HTTP read error");
+      notify_progress(OTA_STATE_FAILED, ota_progress, "Download error");
+      esp_ota_abort(ota_handle);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      goto ota_end;
+    } else if (read_len == 0) {
+      // Connection closed
+      break;
     }
-    return ESP_OK;
-}
 
-/**
- * @brief OTA update task
- */
-static void ota_update_task(void *pvParameter)
-{
-    const char *url = (const char *)pvParameter;
-    esp_err_t ret;
-
-    ESP_LOGI(TAG, "Starting OTA update from: %s", url);
-    notify_progress(OTA_STATE_DOWNLOADING, 0, "Starting OTA update");
-
-    // Configure HTTP client
-    esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = ota_http_event_handler,
-        .keep_alive_enable = true,
-        .timeout_ms = 30000,
-    };
-
-    // Configure OTA
-    esp_https_ota_config_t ota_config = {
-        .http_config = &config,
-    };
-
-    esp_https_ota_handle_t https_ota_handle = NULL;
-    ret = esp_https_ota_begin(&ota_config, &https_ota_handle);
+    // Write to flash
+    ret = esp_ota_write(ota_handle, buffer, read_len);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "OTA begin failed: %s", esp_err_to_name(ret));
-        notify_progress(OTA_STATE_FAILED, 0, "Failed to start OTA");
-        goto ota_end;
+      ESP_LOGE(TAG, "OTA write failed: %s", esp_err_to_name(ret));
+      notify_progress(OTA_STATE_FAILED, ota_progress, "Flash write failed");
+      esp_ota_abort(ota_handle);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      goto ota_end;
     }
 
-    // Get image size
-    int image_size = esp_https_ota_get_image_size(https_ota_handle);
-    ESP_LOGI(TAG, "Image size: %d bytes", image_size);
+    total_read += read_len;
+    int progress = (total_read * 100) / content_length;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Downloading: %d/%d bytes", total_read,
+             content_length);
+    notify_progress(OTA_STATE_DOWNLOADING, progress, msg);
+  }
 
-    // Download and write firmware
-    int downloaded = 0;
-    while (1) {
-        ret = esp_https_ota_perform(https_ota_handle);
-        if (ret != ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
-            break;
-        }
+  // Close HTTP
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
 
-        // Update progress
-        downloaded = esp_https_ota_get_image_len_read(https_ota_handle);
-        if (image_size > 0) {
-            int progress = (downloaded * 100) / image_size;
-            char msg[64];
-            snprintf(msg, sizeof(msg), "Downloading: %d/%d bytes", downloaded, image_size);
-            notify_progress(OTA_STATE_DOWNLOADING, progress, msg);
-        }
+  // Verify complete download
+  if (total_read != content_length) {
+    ESP_LOGE(TAG, "Incomplete download: %d/%d", total_read, content_length);
+    notify_progress(OTA_STATE_FAILED, ota_progress, "Incomplete download");
+    esp_ota_abort(ota_handle);
+    goto ota_end;
+  }
 
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+  notify_progress(OTA_STATE_VERIFYING, 100, "Verifying firmware");
 
-    // Check if download completed successfully
-    if (esp_https_ota_is_complete_data_received(https_ota_handle) != true) {
-        ESP_LOGE(TAG, "Complete data was not received");
-        notify_progress(OTA_STATE_FAILED, ota_progress, "Incomplete download");
-        ret = ESP_FAIL;
+  // Finish OTA
+  ret = esp_ota_end(ota_handle);
+  if (ret != ESP_OK) {
+    if (ret == ESP_ERR_OTA_VALIDATE_FAILED) {
+      ESP_LOGE(TAG, "Image validation failed");
+      notify_progress(OTA_STATE_FAILED, 100, "Image validation failed");
     } else {
-        notify_progress(OTA_STATE_VERIFYING, 100, "Verifying firmware");
-
-        ret = esp_https_ota_finish(https_ota_handle);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "OTA update successful!");
-            notify_progress(OTA_STATE_SUCCESS, 100, "Update successful - Rebooting...");
-
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            esp_restart();
-        } else {
-            if (ret == ESP_ERR_OTA_VALIDATE_FAILED) {
-                ESP_LOGE(TAG, "Image validation failed, image is corrupted");
-                notify_progress(OTA_STATE_FAILED, 100, "Image validation failed");
-            } else {
-                ESP_LOGE(TAG, "OTA finish failed: %s", esp_err_to_name(ret));
-                notify_progress(OTA_STATE_FAILED, 100, "Update failed");
-            }
-        }
-        https_ota_handle = NULL;
+      ESP_LOGE(TAG, "OTA end failed: %s", esp_err_to_name(ret));
+      notify_progress(OTA_STATE_FAILED, 100, "OTA finish failed");
     }
+    goto ota_end;
+  }
+
+  // Set boot partition
+  ret = esp_ota_set_boot_partition(update_partition);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to set boot partition: %s", esp_err_to_name(ret));
+    notify_progress(OTA_STATE_FAILED, 100, "Set boot partition failed");
+    goto ota_end;
+  }
+
+  ESP_LOGI(TAG, "OTA update successful!");
+  notify_progress(OTA_STATE_SUCCESS, 100, "Update successful - Rebooting...");
+
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  esp_restart();
 
 ota_end:
-    if (https_ota_handle) {
-        esp_https_ota_abort(https_ota_handle);
-    }
+  // Free buffer
+  if (buffer) {
+    free(buffer);
+  }
 
-    // Free URL string
-    free((void *)url);
+  // Free URL string
+  free((void *)url);
 
-    ota_running = false;
-    ota_task_handle = NULL;
-    vTaskDelete(NULL);
+  ota_running = false;
+  ota_task_handle = NULL;
+  vTaskDelete(NULL);
 }
 
 /**
  * @brief Initialize OTA update module
  */
-esp_err_t ota_update_init(void)
-{
-    ESP_LOGI(TAG, "OTA update module initialized");
-    ESP_LOGI(TAG, "Current version: %s", ota_update_get_current_version());
+esp_err_t ota_update_init(void) {
+  ESP_LOGI(TAG, "OTA update module initialized");
+  ESP_LOGI(TAG, "Current version: %s", ota_update_get_current_version());
 
-    // Check if we rolled back from a failed update
-    if (ota_update_check_rollback()) {
-        ESP_LOGW(TAG, "Device rolled back from failed OTA update");
-    }
+  // Check if we rolled back from a failed update
+  if (ota_update_check_rollback()) {
+    ESP_LOGW(TAG, "Device rolled back from failed OTA update");
+  }
 
-    return ESP_OK;
+  return ESP_OK;
 }
 
 /**
  * @brief Start OTA update from HTTP URL
  */
-esp_err_t ota_update_start(const char *url)
-{
-    if (ota_running) {
-        ESP_LOGW(TAG, "OTA update already in progress");
-        return ESP_ERR_INVALID_STATE;
-    }
+esp_err_t ota_update_start(const char *url) {
+  if (ota_running) {
+    ESP_LOGW(TAG, "OTA update already in progress");
+    return ESP_ERR_INVALID_STATE;
+  }
 
-    if (!url || strlen(url) == 0) {
-        ESP_LOGE(TAG, "Invalid URL");
-        return ESP_ERR_INVALID_ARG;
-    }
+  if (!url || strlen(url) == 0) {
+    ESP_LOGE(TAG, "Invalid URL");
+    return ESP_ERR_INVALID_ARG;
+  }
 
-    ESP_LOGI(TAG, "Starting OTA update task");
+  ESP_LOGI(TAG, "Starting OTA update task");
 
-    // Duplicate URL string (task will free it)
-    char *url_copy = strdup(url);
-    if (!url_copy) {
-        ESP_LOGE(TAG, "Failed to allocate URL string");
-        return ESP_ERR_NO_MEM;
-    }
+  // Duplicate URL string (task will free it)
+  char *url_copy = strdup(url);
+  if (!url_copy) {
+    ESP_LOGE(TAG, "Failed to allocate URL string");
+    return ESP_ERR_NO_MEM;
+  }
 
-    ota_running = true;
-    ota_state = OTA_STATE_IDLE;
-    ota_progress = 0;
+  ota_running = true;
+  ota_state = OTA_STATE_IDLE;
+  ota_progress = 0;
 
-    // Create OTA task
-    BaseType_t ret = xTaskCreate(
-        ota_update_task,
-        "ota_update_task",
-        8192,
-        (void *)url_copy,
-        5,
-        &ota_task_handle
-    );
+  // Create OTA task
+  BaseType_t ret = xTaskCreate(ota_update_task, "ota_update_task", 8192,
+                               (void *)url_copy, 5, &ota_task_handle);
 
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create OTA task");
-        free(url_copy);
-        ota_running = false;
-        return ESP_FAIL;
-    }
+  if (ret != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create OTA task");
+    free(url_copy);
+    ota_running = false;
+    return ESP_FAIL;
+  }
 
-    return ESP_OK;
+  return ESP_OK;
 }
 
 /**
  * @brief Check if OTA update is in progress
  */
-bool ota_update_is_running(void)
-{
-    return ota_running;
-}
+bool ota_update_is_running(void) { return ota_running; }
 
 /**
  * @brief Get current OTA state
  */
-ota_state_t ota_update_get_state(void)
-{
-    return ota_state;
-}
+ota_state_t ota_update_get_state(void) { return ota_state; }
 
 /**
  * @brief Get current OTA progress
  */
-int ota_update_get_progress(void)
-{
-    return ota_progress;
-}
+int ota_update_get_progress(void) { return ota_progress; }
 
 /**
  * @brief Register progress callback
  */
-void ota_update_register_callback(ota_progress_callback_t callback)
-{
-    progress_callback = callback;
-    ESP_LOGI(TAG, "Progress callback registered");
+void ota_update_register_callback(ota_progress_callback_t callback) {
+  progress_callback = callback;
+  ESP_LOGI(TAG, "Progress callback registered");
 }
 
 /**
  * @brief Get current firmware version
  */
-const char* ota_update_get_current_version(void)
-{
-    const esp_app_desc_t *app_desc = esp_app_get_description();
-    return app_desc->version;
+const char *ota_update_get_current_version(void) {
+  const esp_app_desc_t *app_desc = esp_app_get_description();
+  return app_desc->version;
 }
 
 /**
  * @brief Check if partition was rolled back
  */
-bool ota_update_check_rollback(void)
-{
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_ota_img_states_t ota_state;
+bool ota_update_check_rollback(void) {
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t ota_state;
 
-    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
-        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            ESP_LOGW(TAG, "Running partition is in pending verify state");
-            return true;
-        }
+  if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+    if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+      ESP_LOGW(TAG, "Running partition is in pending verify state");
+      return true;
     }
+  }
 
-    return false;
+  return false;
 }
 
 /**
  * @brief Mark current partition as valid
  */
-esp_err_t ota_update_mark_valid(void)
-{
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_ota_img_states_t ota_state;
+esp_err_t ota_update_mark_valid(void) {
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t ota_state;
 
-    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
-        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            ESP_LOGI(TAG, "Marking current partition as valid");
-            esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to mark partition valid: %s", esp_err_to_name(err));
-                return err;
-            }
-            ESP_LOGI(TAG, "Current partition marked as valid");
-        }
+  if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+    if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+      ESP_LOGI(TAG, "Marking current partition as valid");
+      esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+      if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mark partition valid: %s",
+                 esp_err_to_name(err));
+        return err;
+      }
+      ESP_LOGI(TAG, "Current partition marked as valid");
     }
+  }
 
-    return ESP_OK;
+  return ESP_OK;
 }
