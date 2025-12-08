@@ -29,6 +29,7 @@
 #include "file_iterator.h"
 #include "ha_client.h"
 #include "iot_button.h"
+#include "led_status.h"
 #include "local_music_player.h"
 #include "mqtt_ha.h"
 #include "network_manager.h"
@@ -46,6 +47,9 @@ static void conversation_response_handler(const char *response_text,
                                           const char *conversation_id) {
   ESP_LOGI(TAG, "HA Response [%s]: %s",
            conversation_id ? conversation_id : "none", response_text);
+
+  // Set LED to SPEAKING (cyan)
+  led_status_set(LED_STATUS_SPEAKING);
 
   // ═══════════════════════════════════════════════════════════════════
   // >>> NOVO: Publish VA status i response za CYD display <<<
@@ -225,6 +229,7 @@ static void mqtt_wwd_switch_callback(const char *entity_id,
     wwd_start();
     audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
     mqtt_ha_update_switch("wwd_enabled", true);
+    led_status_set(LED_STATUS_IDLE); // Green - wake word ready
     ESP_LOGI(TAG, "Wake Word Detection enabled via MQTT");
   } else {
     wwd_stop();
@@ -533,6 +538,27 @@ static void mqtt_agc_target_callback(const char *entity_id,
   mqtt_ha_update_number("agc_target_level", (float)agc_target_level);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// LED Status MQTT Callbacks
+// ═══════════════════════════════════════════════════════════════════════════
+
+static void mqtt_led_switch_callback(const char *entity_id,
+                                     const char *payload) {
+  bool enable = (strcmp(payload, "ON") == 0);
+  ESP_LOGI(TAG, "MQTT: LED %s", enable ? "enabled" : "disabled");
+  led_status_enable(enable);
+  mqtt_ha_update_switch("led_enabled", enable);
+}
+
+static void mqtt_led_brightness_callback(const char *entity_id,
+                                         const char *payload) {
+  float value = atof(payload);
+  uint8_t brightness = (uint8_t)value;
+  ESP_LOGI(TAG, "MQTT: LED brightness updated to %u%%", brightness);
+  led_status_set_brightness(brightness);
+  mqtt_ha_update_number("led_brightness", (float)brightness);
+}
+
 static void mqtt_status_update_task(void *arg) {
   while (1) {
     if (mqtt_ha_is_connected()) {
@@ -651,6 +677,9 @@ static void on_wake_word_detected(wwd_event_t event, void *user_data) {
   if (event == WWD_EVENT_DETECTED) {
     ESP_LOGI(TAG, "🎤 Wake word detected!");
 
+    // Set LED to LISTENING (blue pulsing)
+    led_status_set(LED_STATUS_LISTENING);
+
     // ═══════════════════════════════════════════════════════════════════
     // >>> NOVO: Publish VA status za CYD display <<<
     // ═══════════════════════════════════════════════════════════════════
@@ -698,6 +727,9 @@ static void tts_playback_complete_handler(void) {
   }
   // ═══════════════════════════════════════════════════════════════════
 
+  // Set LED back to IDLE (dim green)
+  led_status_set(LED_STATUS_IDLE);
+
   if (music_paused_for_tts && local_music_player_is_initialized()) {
     ESP_LOGI(TAG, "Resuming music playback after TTS");
     local_music_player_resume();
@@ -730,6 +762,9 @@ static void vad_event_handler(audio_capture_vad_event_t event) {
       mqtt_ha_update_sensor("va_status", "OBRAĐUJEM...");
     }
     // ═══════════════════════════════════════════════════════════════════
+
+    // Set LED to PROCESSING (yellow blinking)
+    led_status_set(LED_STATUS_PROCESSING);
 
     pipeline_active = false;
     audio_capture_stop();
@@ -842,6 +877,18 @@ void app_main(void) {
     load_ota_url_from_nvs();
   } else {
     ESP_LOGW(TAG, "OTA module initialization failed");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Initialize LED Status Indicator
+  // ═══════════════════════════════════════════════════════════════════════
+  ESP_LOGI(TAG, "Initializing LED status indicator...");
+  ret = led_status_init();
+  if (ret == ESP_OK) {
+    ESP_LOGI(TAG, "LED status initialized (R=%d, G=%d, B=%d)", LED_GPIO_RED,
+             LED_GPIO_GREEN, LED_GPIO_BLUE);
+  } else {
+    ESP_LOGW(TAG, "LED status initialization failed");
   }
 
   ESP_LOGI(TAG, "Initializing ES8311 audio codec...");
@@ -1041,8 +1088,17 @@ void app_main(void) {
                                   NULL);
           // ═══════════════════════════════════════════════════════════════════
 
-          ESP_LOGI(TAG, "Home Assistant entities registered (17 sensors, 3 "
-                        "switches, 9 buttons, 6 numbers)");
+          // ═══════════════════════════════════════════════════════════════════
+          // LED Status Controls
+          // ═══════════════════════════════════════════════════════════════════
+          mqtt_ha_register_switch("led_enabled", "LED Status Indicator",
+                                  mqtt_led_switch_callback);
+          mqtt_ha_register_number("led_brightness", "LED Brightness", 0, 100,
+                                  10, "%", mqtt_led_brightness_callback);
+          // ═══════════════════════════════════════════════════════════════════
+
+          ESP_LOGI(TAG, "Home Assistant entities registered (17 sensors, 4 "
+                        "switches, 9 buttons, 7 numbers)");
 
           // ═══════════════════════════════════════════════════════════════════
           // >>> NOVO: Inicijalni VA status <<<
@@ -1093,6 +1149,9 @@ void app_main(void) {
 
         wwd_start();
         audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+
+        // LED to green - wake word ready
+        led_status_set(LED_STATUS_IDLE);
       } else {
         ESP_LOGI(TAG, "========================================");
         ESP_LOGI(TAG, "🎙️  Voice Assistant Ready!");

@@ -58,20 +58,23 @@ static void capture_task(void *arg) {
     if (ret == ESP_OK && bytes_read > 0) {
       size_t num_samples = bytes_read / sizeof(int16_t);
 
-      // Apply AGC if enabled (before any other processing)
-      if (agc_enabled && agc_handle != NULL) {
-        agc_process(agc_handle, buffer, num_samples);
-      }
-
       // MODE 1: Wake Word Detection Mode (lightweight)
+      // NOTE: AGC is NOT applied in WWD mode to maintain consistent audio
+      // levels for reliable wake word detection
       if (capture_mode == CAPTURE_MODE_WAKE_WORD) {
-        // Feed audio to wake word detector callback
+        // Feed raw audio to wake word detector callback
         if (wwd_callback) {
           wwd_callback(buffer, num_samples);
         }
         // Skip VAD and streaming - just listen for wake word
         chunk_count++;
         continue;
+      }
+
+      // MODE 2: Recording Mode (intensive)
+      // Apply AGC only during recording (for STT)
+      if (agc_enabled && agc_handle != NULL) {
+        agc_process(agc_handle, buffer, num_samples);
       }
 
       // MODE 2: Recording Mode (intensive) - Process through VAD if enabled
