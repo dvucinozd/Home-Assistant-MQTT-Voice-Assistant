@@ -23,6 +23,7 @@ static file_iterator_instance_t *file_iterator = NULL;
 static int current_track_index = -1;
 static int total_tracks = 0;
 static music_event_callback_t event_callback = NULL;
+static bool manual_stop = false;  // Flag to prevent auto-play after manual stop
 
 /**
  * @brief Audio player callback from BSP
@@ -34,9 +35,14 @@ static void audio_player_callback(audio_player_cb_ctx_t *ctx)
     switch (ctx->audio_event) {
         case AUDIO_PLAYER_CALLBACK_EVENT_IDLE:
         case AUDIO_PLAYER_CALLBACK_EVENT_COMPLETED_PLAYING_NEXT:
-            // Track finished, play next automatically
-            ESP_LOGI(TAG, "Track finished, playing next...");
-            local_music_player_next();
+            // Track finished - only auto-play next if not manually stopped
+            if (manual_stop) {
+                ESP_LOGI(TAG, "Track stopped manually - staying stopped");
+                manual_stop = false;  // Reset flag
+            } else {
+                ESP_LOGI(TAG, "Track finished, playing next...");
+                local_music_player_next();
+            }
             break;
 
         case AUDIO_PLAYER_CALLBACK_EVENT_PLAYING:
@@ -196,6 +202,9 @@ esp_err_t local_music_player_play(void)
     ESP_LOGI(TAG, "Starting playback from track %d/%d",
              current_track_index + 1, total_tracks);
 
+    // Clear manual stop flag - user explicitly pressed play
+    manual_stop = false;
+
     esp_err_t ret = bsp_extra_player_play_index(file_iterator, current_track_index);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to play track %d", current_track_index);
@@ -220,12 +229,16 @@ esp_err_t local_music_player_stop(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Stopping music playback");
+    ESP_LOGI(TAG, "Stopping music playback (manual stop)");
+
+    // Set manual stop flag to prevent auto-play next track
+    manual_stop = true;
 
     // Use audio player stop (queues stop request)
     esp_err_t ret = audio_player_stop();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to stop audio player");
+        manual_stop = false;  // Reset on error
         return ret;
     }
 
@@ -279,6 +292,9 @@ esp_err_t local_music_player_resume(void)
 
     ESP_LOGI(TAG, "Resuming music playback");
 
+    // Clear manual stop flag - user pressed resume
+    manual_stop = false;
+
     // Use audio player resume (queues resume request)
     esp_err_t ret = audio_player_resume();
     if (ret != ESP_OK) {
@@ -308,6 +324,9 @@ esp_err_t local_music_player_next(void)
     current_track_index = (current_track_index + 1) % total_tracks;
 
     ESP_LOGI(TAG, "Playing next track: %d/%d", current_track_index + 1, total_tracks);
+
+    // Clear manual stop flag - user pressed next or track auto-advanced
+    manual_stop = false;
 
     esp_err_t ret = bsp_extra_player_play_index(file_iterator, current_track_index);
     if (ret != ESP_OK) {
@@ -340,6 +359,9 @@ esp_err_t local_music_player_previous(void)
     }
 
     ESP_LOGI(TAG, "Playing previous track: %d/%d", current_track_index + 1, total_tracks);
+
+    // Clear manual stop flag - user pressed previous
+    manual_stop = false;
 
     esp_err_t ret = bsp_extra_player_play_index(file_iterator, current_track_index);
     if (ret != ESP_OK) {
