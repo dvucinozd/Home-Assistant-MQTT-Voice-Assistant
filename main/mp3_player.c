@@ -887,6 +887,8 @@ void app_main(void) {
   if (ret == ESP_OK) {
     ESP_LOGI(TAG, "LED status initialized (R=%d, G=%d, B=%d)", LED_GPIO_RED,
              LED_GPIO_GREEN, LED_GPIO_BLUE);
+    // Set LED to yellow - system booting
+    led_status_set(LED_STATUS_BOOTING);
   } else {
     ESP_LOGW(TAG, "LED status initialization failed");
   }
@@ -933,6 +935,8 @@ void app_main(void) {
   }
 
   ESP_LOGI(TAG, "Initializing Network Manager...");
+  // Set LED to purple pulsing - connecting to network
+  led_status_set(LED_STATUS_CONNECTING);
   network_manager_register_callback(network_event_callback);
   ret = network_manager_init();
   if (ret == ESP_OK && network_manager_is_connected()) {
