@@ -376,7 +376,15 @@ esp_err_t mqtt_ha_register_number(const char *entity_id, const char *name,
     cJSON_AddStringToObject(config, "unit_of_measurement", unit);
   }
 
-  return publish_discovery("number", entity_id, config);
+  esp_err_t ret = publish_discovery("number", entity_id, config);
+
+  // Subscribe to command topic if connected and callback is set
+  if (ret == ESP_OK && mqtt_connected && callback) {
+    esp_mqtt_client_subscribe(mqtt_client, command_topic, 0);
+    ESP_LOGI(TAG, "Subscribed to command topic: %s", command_topic);
+  }
+
+  return ret;
 }
 
 esp_err_t mqtt_ha_register_select(const char *entity_id, const char *name,
@@ -422,7 +430,15 @@ esp_err_t mqtt_ha_register_select(const char *entity_id, const char *name,
   }
   cJSON_AddItemToObject(config, "options", options_array);
 
-  return publish_discovery("select", entity_id, config);
+  esp_err_t ret = publish_discovery("select", entity_id, config);
+
+  // Subscribe to command topic if connected and callback is set
+  if (ret == ESP_OK && mqtt_connected && callback) {
+    esp_mqtt_client_subscribe(mqtt_client, command_topic, 0);
+    ESP_LOGI(TAG, "Subscribed to command topic: %s", command_topic);
+  }
+
+  return ret;
 }
 
 esp_err_t mqtt_ha_register_button(const char *entity_id, const char *name,
