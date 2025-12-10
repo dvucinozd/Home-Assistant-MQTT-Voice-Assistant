@@ -44,8 +44,17 @@ static void audio_player_callback(audio_player_cb_ctx_t *ctx)
                 ESP_LOGI(TAG, "Track stopped manually - staying stopped");
                 manual_stop = false;  // Reset flag
             } else {
-                ESP_LOGI(TAG, "Track finished, playing next...");
-                local_music_player_next();
+                // Check if this was the last track
+                if (current_track_index == total_tracks - 1) {
+                    ESP_LOGI(TAG, "Last track finished - stopping playback");
+                    player_state = MUSIC_STATE_STOPPED;
+                    if (event_callback) {
+                        event_callback(player_state, current_track_index, total_tracks);
+                    }
+                } else {
+                    ESP_LOGI(TAG, "Track finished, playing next...");
+                    local_music_player_next();
+                }
             }
             break;
 

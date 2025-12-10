@@ -87,6 +87,14 @@ typedef void (*ha_conversation_callback_t)(const char *response_text, const char
 typedef void (*ha_tts_audio_callback_t)(const uint8_t *audio_data, size_t length);
 
 /**
+ * @brief Callback for pipeline errors or unexpected termination
+ *
+ * @param error_code Error code string from HA
+ * @param error_message Error message from HA
+ */
+typedef void (*ha_pipeline_error_callback_t)(const char *error_code, const char *error_message);
+
+/**
  * @brief Register callback for conversation responses
  *
  * @param callback Function to call when HA sends conversation response
@@ -99,6 +107,13 @@ void ha_client_register_conversation_callback(ha_conversation_callback_t callbac
  * @param callback Function to call when HA sends TTS audio chunk
  */
 void ha_client_register_tts_audio_callback(ha_tts_audio_callback_t callback);
+
+/**
+ * @brief Register callback for pipeline errors
+ *
+ * @param callback Function to call when pipeline fails
+ */
+void ha_client_register_error_callback(ha_pipeline_error_callback_t callback);
 
 /**
  * @brief Stop Home Assistant client and disconnect

@@ -43,6 +43,9 @@
 #define BUTTON_IO_NUM 35
 #define BUTTON_ACTIVE_LEVEL 0
 
+// Forward declarations
+static void music_player_event_handler(music_state_t state, int current_track, int total_tracks);
+
 static void conversation_response_handler(const char *response_text,
                                           const char *conversation_id) {
   ESP_LOGI(TAG, "HA Response [%s]: %s",
@@ -134,6 +137,11 @@ static void network_event_callback(network_type_t type, bool connected) {
         if (music_ret == ESP_OK) {
           ESP_LOGI(TAG, "🎵 Local music player initialized - %d tracks found",
                    local_music_player_get_total_tracks());
+
+          // Register music player event callback
+          local_music_player_register_callback(music_player_event_handler);
+          ESP_LOGI(TAG, "Music player event callback registered");
+
           if (mqtt_ha_is_connected()) {
             mqtt_ha_update_sensor("sd_card_status", "ready");
           }
@@ -743,6 +751,58 @@ static void tts_playback_complete_handler(void) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PIPELINE ERROR HANDLER
+// ═══════════════════════════════════════════════════════════════════════════
+static void pipeline_error_handler(const char *error_code, const char *error_message) {
+  ESP_LOGE(TAG, "Pipeline error occurred: %s - %s", error_code, error_message);
+
+  // Set LED to ERROR (red blinking)
+  led_status_set(LED_STATUS_ERROR);
+
+  // Clean up pipeline state
+  pipeline_active = false;
+  if (pipeline_handler != NULL) {
+    free(pipeline_handler);
+    pipeline_handler = NULL;
+  }
+  audio_chunks_sent = 0;
+
+  ESP_LOGI(TAG, "Pipeline state cleaned up, resuming wake word detection in 2 seconds...");
+
+  // Wait a bit before resuming wake word mode
+  vTaskDelay(pdMS_TO_TICKS(2000));
+
+  // Resume wake word detection
+  wwd_start();
+  audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+
+  // Set LED to IDLE (green)
+  led_status_set(LED_STATUS_IDLE);
+
+  ESP_LOGI(TAG, "✅ Wake word detection resumed after pipeline error");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MUSIC PLAYER EVENT HANDLER
+// ═══════════════════════════════════════════════════════════════════════════
+static void music_player_event_handler(music_state_t state, int current_track, int total_tracks) {
+  ESP_LOGI(TAG, "Music player state changed: %d (track %d/%d)", state, current_track + 1, total_tracks);
+
+  if (state == MUSIC_STATE_STOPPED) {
+    ESP_LOGI(TAG, "Music playback stopped - resuming wake word detection...");
+
+    // Set LED back to IDLE (green)
+    led_status_set(LED_STATUS_IDLE);
+
+    // Resume wake word detection
+    wwd_start();
+    audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+
+    ESP_LOGI(TAG, "✅ Wake word detection resumed after music stopped");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // VAD EVENT HANDLER
 // ═══════════════════════════════════════════════════════════════════════════
 static void vad_event_handler(audio_capture_vad_event_t event) {
@@ -976,6 +1036,7 @@ void app_main(void) {
 
       ha_client_register_conversation_callback(conversation_response_handler);
       ha_client_register_tts_audio_callback(tts_audio_handler);
+      ha_client_register_error_callback(pipeline_error_handler);
       tts_player_register_complete_callback(tts_playback_complete_handler);
 
       ESP_LOGI(TAG, "Initializing MQTT Home Assistant Discovery...");

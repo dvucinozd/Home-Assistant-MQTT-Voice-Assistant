@@ -35,6 +35,9 @@ static ha_conversation_callback_t conversation_callback = NULL;
 // TTS audio callback
 static ha_tts_audio_callback_t tts_audio_callback = NULL;
 
+// Pipeline error callback
+static ha_pipeline_error_callback_t error_callback = NULL;
+
 // STT binary handler ID (received from run-start event)
 static int stt_binary_handler_id = -1;
 
@@ -45,6 +48,9 @@ static EventGroupHandle_t ha_event_group;
 
 // Forward declarations
 static void download_tts_audio(const char *url);
+
+// External function to stop audio capture (defined in audio_capture.c)
+extern void audio_capture_stop(void);
 
 /**
  * Resolve mDNS hostname to IP address
@@ -221,10 +227,22 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             } else if (strcmp(event_type->valuestring, "error") == 0) {
               cJSON *code = cJSON_GetObjectItem(data_obj, "code");
               cJSON *message = cJSON_GetObjectItem(data_obj, "message");
-              ESP_LOGE(
-                  TAG, "Pipeline error: %s - %s",
-                  code && code->valuestring ? code->valuestring : "unknown",
-                  message && message->valuestring ? message->valuestring : "");
+              const char *error_code = code && code->valuestring ? code->valuestring : "unknown";
+              const char *error_msg = message && message->valuestring ? message->valuestring : "";
+
+              ESP_LOGE(TAG, "Pipeline error: %s - %s", error_code, error_msg);
+
+              // Stop audio capture on pipeline error
+              audio_capture_stop();
+              ESP_LOGI(TAG, "Audio capture stopped due to pipeline error");
+
+              // Reset handler ID
+              stt_binary_handler_id = -1;
+
+              // Call error callback if registered
+              if (error_callback) {
+                error_callback(error_code, error_msg);
+              }
             }
           }
         }
@@ -625,6 +643,11 @@ void ha_client_register_conversation_callback(
 void ha_client_register_tts_audio_callback(ha_tts_audio_callback_t callback) {
   tts_audio_callback = callback;
   ESP_LOGI(TAG, "TTS audio callback registered");
+}
+
+void ha_client_register_error_callback(ha_pipeline_error_callback_t callback) {
+  error_callback = callback;
+  ESP_LOGI(TAG, "Pipeline error callback registered");
 }
 
 esp_err_t ha_client_request_tts(const char *text) {
