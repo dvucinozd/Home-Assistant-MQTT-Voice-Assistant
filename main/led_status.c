@@ -48,14 +48,21 @@ static uint8_t current_b = 0;
  * @brief Apply RGB values to LEDs with brightness scaling
  */
 static void apply_rgb(uint8_t r, uint8_t g, uint8_t b) {
+  ESP_LOGI(TAG, "apply_rgb(%u, %u, %u) - initialized=%d, enabled=%d",
+           r, g, b, led_initialized, led_enabled);
+
   if (!led_initialized) {
+    ESP_LOGW(TAG, "LED not initialized, skipping");
     return;
   }
 
   // Allow turning off LED even when led_enabled is false
   if (!led_enabled && (r != 0 || g != 0 || b != 0)) {
+    ESP_LOGI(TAG, "LED disabled, blocking non-zero RGB");
     return;
   }
+
+  ESP_LOGI(TAG, "Setting LED: R=%u G=%u B=%u", r, g, b);
 
   // Scale by brightness
   uint32_t scaled_r = (r * brightness) / 100;
