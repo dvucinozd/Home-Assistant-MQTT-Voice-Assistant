@@ -18,7 +18,7 @@ KORAK 2: Navigate to Project
 
 Kopiraj i paste ovu liniju u Command Prompt:
 
-cd D:\platformio\P4\esp32-p4-voice-assistant
+cd D:\AI\ESP32P4\JC-ESP32P4-M3-DEV-Voice-Assistant_NEW
 
 Pritisni ENTER
 
@@ -52,7 +52,7 @@ ALTERNATIVE METHOD - Using ESP-IDF CMD Directly
 
 1. Start Menu → Search "ESP-IDF"
 2. Click "ESP-IDF 5.5 CMD"
-3. Navigate to: cd D:\platformio\P4\esp32-p4-voice-assistant
+3. Navigate to: cd D:\AI\ESP32P4\JC-ESP32P4-M3-DEV-Voice-Assistant_NEW
 4. Build: idf.py build
 5. Flash: idf.py -p COM13 flash monitor
 

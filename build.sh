@@ -5,21 +5,18 @@ echo "========================================"
 echo "ESP32-P4 Voice Assistant Build"
 echo "========================================"
 
-export IDF_PATH="/c/Espressif/frameworks/esp-idf-v5.5"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+IDF_PATH="${IDF_PATH:-/c/Espressif/frameworks/esp-idf-v5.5}"
 
-# Source ESP-IDF export script
 echo "Setting up ESP-IDF environment..."
 source "$IDF_PATH/export.sh"
 
-# Navigate to project
-cd /d/platformio/P4/esp32-p4-voice-assistant
+cd "$SCRIPT_DIR"
 
-# Show IDF version
 echo ""
 echo "IDF Version:"
 idf.py --version
 
-# Build project
 echo ""
 echo "Building project..."
 idf.py build

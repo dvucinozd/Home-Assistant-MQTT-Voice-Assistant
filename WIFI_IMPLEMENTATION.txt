@@ -41,9 +41,9 @@ WIFI CONFIGURATION:
 
 Location: main/config.h
 
-Current settings:
-- SSID: "ZAKLJUCANO"
-- Password: "Onkjnn121"
+Set your own credentials (do not commit real values):
+- SSID: "<your-ssid>"
+- Password: "<your-password>"
 - Max retry: 5 attempts
 - Auth mode: WPA2-PSK (with WPA3-SAE support)
 
@@ -73,7 +73,7 @@ I (xxx) mp3_player: Initializing WiFi (ESP32-C6 via SDIO)...
 I (xxx) wifi_manager: Initializing WiFi via ESP32-C6 (SDIO)...
 I (xxx) wifi_manager: WiFi init finished. Waiting for connection...
 I (xxx) wifi_manager: Got IP:192.168.0.xxx
-I (xxx) wifi_manager: Connected to AP SSID:ZAKLJUCANO
+I (xxx) wifi_manager: Connected to AP SSID:<YOUR_SSID>
 I (xxx) mp3_player: WiFi connected successfully!
 W (xxx) mp3_player: No SD card detected - MP3 player disabled
 I (xxx) mp3_player: Audio codec is ready for Voice Assistant development

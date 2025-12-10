@@ -200,5 +200,5 @@ To support multiple wake words simultaneously:
 
 All available models can be found at:
 ```
-D:\platformio\P4\esp32-p4-voice-assistant\managed_components\espressif__esp-sr\model\wakenet_model\
+D:\AI\ESP32P4\JC-ESP32P4-M3-DEV-Voice-Assistant_NEW\managed_components\espressif__esp-sr\model\wakenet_model\
 ```
