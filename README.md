@@ -15,6 +15,9 @@ Lokalni glasovni asistent za Home Assistant baziran na ESP32-P4 platformi, imple
 - ✅ MQTT HA auto-discovery: sensors (wifi_rssi, free_memory, uptime), WWD switch, restart/test-TTS buttons, VAD/WWD tuning numbers
 - ✅ WiFi via ESP32-C6 SDIO, mDNS hostname/IP fallback, HA WebSocket + TTS download
 - ✅ Codec stability: set_fs reconfigure between microphone, beep tone, and TTS playback
+- ✅ RGB LED status indicator (HW-478 on GPIO 45/46/47) with brightness control
+- ✅ OTA firmware updates via HTTP server with Home Assistant controls
+- ✅ Local music player with SD card support (play/pause/stop/next/previous/volume)
 
 ---
 
@@ -52,6 +55,21 @@ SDIO_CMD:  GPIO44
 SDIO_CLK:  GPIO43
 C6_RESET:  GPIO54 (optional)
 ```
+
+**RGB LED Status Indicator (HW-478):**
+```
+LED_RED:   GPIO45
+LED_GREEN: GPIO46
+LED_BLUE:  GPIO47
+```
+
+LED Status Colors:
+- 🟢 **Green:** Idle (ready for wake word)
+- 🔵 **Blue Pulsing:** Listening (recording voice)
+- 🟡 **Yellow Blinking:** Processing (STT/Intent)
+- 🟣 **Purple Pulsing:** Connecting to WiFi/MQTT
+- ⚪ **White Breathing:** OTA update in progress
+- 🔴 **Red Fast Blink:** Error state
 
 ---
 
@@ -119,40 +137,72 @@ Exit monitor: `Ctrl+]`
 
 ## 🛰 MQTT Home Assistant Integration
 
-- Auto-discovery via MQTT; device appears as "ESP32-P4 Voice Assistant" in Home Assistant
-- Sensors: `wifi_rssi`, `free_memory`, `uptime` (10s updates)
-- Controls: switch `wwd_enabled`, buttons `restart` and `test_tts`
-- Number tuning: `vad_threshold`, `vad_silence_duration`, `vad_min_speech`, `vad_max_recording`, `wwd_threshold`
-- Wake flow: confirmation beep, warmup chunk skip, and wake word resumes only after TTS completion
-- See `MQTT_INTEGRATION.md` for dashboard examples and topic references
+Device appears as "ESP32-P4 Voice Assistant" in Home Assistant with full auto-discovery.
+
+**Sensors (10s updates):**
+- `wifi_rssi` - WiFi signal strength
+- `free_memory` - Available heap memory
+- `uptime` - System uptime
+- `agc_current_gain` - Current AGC gain level
+
+**Switches:**
+- `wwd_enabled` - Wake Word Detection on/off
+- `agc_enabled` - Auto Gain Control on/off
+- `led_enabled` - RGB LED status indicator on/off
+
+**Buttons:**
+- `restart` - Reboot ESP32
+- `test_tts` - Test TTS playback
+- `ota_trigger` - Start OTA firmware update
+
+**Number Controls:**
+- `vad_threshold`, `vad_silence_duration`, `vad_min_speech`, `vad_max_recording` - VAD tuning
+- `wwd_threshold` - Wake word detection sensitivity
+- `agc_target_level` - AGC target level (dB)
+- `led_brightness` - LED brightness (0-100%)
+
+**Media Player:**
+- `music_player` - Full control (play/pause/stop/next/previous/volume)
+- Supports MP3 files from SD card `/music/` folder
+- Auto-stops wake word detection during music playback
+
+**Select Controls:**
+- `log_level` - Runtime logging level (Error/Warn/Info/Debug/Verbose)
+
+See `MQTT_INTEGRATION.md` for dashboard examples and topic references.
 
 ---
 
 ## 📂 Project Structure
 
 ```
-JC-ESP32P4-M3-DEV-Voice-Assistant_NEW/
+esp32-p4-voice-assistant/
   main/
     CMakeLists.txt
-    mp3_player.c             # Main application entry point
-    mqtt_ha.c / mqtt_ha.h    # MQTT HA discovery + entities/controls
-    beep_tone.c / beep_tone.h# Wake confirmation tone
-    wifi_manager.c           # WiFi connectivity (ESP32-C6 SDIO)
-    ha_client.c              # Home Assistant WebSocket/TTS client
-    audio_capture.c          # Microphone input (ES8311) + VAD integration
-    wwd.c / wwd.h            # Wake Word Detection (WakeNet9)
-    tts_player.c             # TTS MP3 decoder & playback
-    vad.c / vad.h            # Voice Activity Detection (RMS energy)
-    config.h.example         # Sample credentials (copy to config.h)
+    mp3_player.c                    # Main application entry point
+    mqtt_ha.c / mqtt_ha.h           # MQTT HA discovery + entities/controls
+    beep_tone.c / beep_tone.h       # Wake confirmation tone
+    wifi_manager.c / wifi_manager.h # WiFi connectivity (ESP32-C6 SDIO)
+    ha_client.c / ha_client.h       # Home Assistant WebSocket/TTS client
+    audio_capture.c / audio_capture.h # Microphone input (ES8311) + VAD
+    wwd.c / wwd.h                   # Wake Word Detection (WakeNet9)
+    tts_player.c / tts_player.h     # TTS MP3 decoder & playback
+    vad.c / vad.h                   # Voice Activity Detection (RMS energy)
+    led_status.c / led_status.h     # RGB LED status indicator with effects
+    ota_update.c / ota_update.h     # OTA firmware update handler
+    local_music_player.c / .h       # SD card music player with HA integration
+    config.h.example                # Sample credentials (copy to config.h)
     Kconfig.projbuild
   common_components/
-    bsp_extra/               # Board Support Package (audio drivers)
+    bsp_extra/                      # Board Support Package (audio drivers)
     espressif__esp32_p4_function_ev_board/
-  managed_components/        # ESP-IDF managed deps (esp-sr, mqtt, websocket…)
-  build/                     # Build output (generated)
-  build.bat / flash.bat / build.py / flash.py / quick_build.bat / quick_flash.bat
-  partitions.csv
-  sdkconfig
+  managed_components/               # ESP-IDF managed deps (esp-sr, mqtt, websocket…)
+  build/                            # Build output (generated)
+  build.bat / flash.bat             # Windows build/flash scripts
+  build.py / flash.py               # Cross-platform build/flash utilities
+  ota_server.bat / ota_server.py   # OTA HTTP server for firmware updates
+  partitions.csv                    # Custom partition table (WakeNet model)
+  sdkconfig                         # ESP-IDF configuration
   README.md
 ```
 
@@ -203,13 +253,37 @@ JC-ESP32P4-M3-DEV-Voice-Assistant_NEW/
 - [x] MQTT number controls for VAD/WWD tuning
 - [x] Wake confirmation beep and TTS-complete resume handling
 
-### Phase 7: Advanced Features 🚧 TODO
+### Phase 7: LED Status Indicator ✅ COMPLETED
+- [x] RGB LED driver with PWM control (LEDC)
+- [x] Visual status feedback (idle/listening/processing/error)
+- [x] Pulsing and blinking effects
+- [x] MQTT brightness control (0-100%)
+- [x] MQTT on/off switch
+- [x] Proper task stack sizing (4096 bytes)
+
+### Phase 8: OTA Updates ✅ COMPLETED
+- [x] HTTP-based OTA update handler
+- [x] MQTT trigger button and URL text input
+- [x] OTA server scripts (Python and Windows batch)
+- [x] White breathing LED during OTA
+- [x] Automatic reboot after successful update
+
+### Phase 9: Local Music Player ✅ COMPLETED
+- [x] SD card MP3 file iterator
+- [x] Home Assistant media player entity
+- [x] Play/pause/stop/next/previous controls
+- [x] Volume control (0-100%)
+- [x] Track position and duration reporting
+- [x] Auto-stop wake word during music playback
+- [x] Manual stop flag to prevent auto-resume
+
+### Phase 10: Advanced Features 🚧 TODO
 - [ ] Audio preprocessing (noise reduction)
 - [ ] Acoustic Echo Cancellation (AEC)
 - [ ] Multi-wake word support
 - [ ] Display integration (MIPI-DSI)
 - [ ] Battery monitoring
-- [ ] OTA updates
+- [ ] Bluetooth speaker output
 
 ---
 
@@ -232,8 +306,8 @@ Copy `main/config.h.example` to `main/config.h`, then edit your credentials (fil
 
 // MQTT Home Assistant Discovery
 #define MQTT_BROKER_URI "mqtt://homeassistant.local:1883"
-#define MQTT_USERNAME NULL
-#define MQTT_PASSWORD NULL
+#define MQTT_USERNAME "mqtt_user"  // or NULL for anonymous
+#define MQTT_PASSWORD "mqtt_password"  // or NULL
 #define MQTT_CLIENT_ID "esp32p4_voice_assistant"
 ```
 
@@ -242,6 +316,35 @@ Copy `main/config.h.example` to `main/config.h`, then edit your credentials (fil
 2. Scroll to "Long-Lived Access Tokens"
 3. Click "Create Token"
 4. Copy token to `config.h`
+
+### OTA Updates
+
+**Method 1: Using OTA Server Script (Recommended)**
+
+1. Build firmware: `build.bat`
+2. Start OTA server on your PC:
+   ```cmd
+   ota_server.bat
+   ```
+   Or cross-platform:
+   ```bash
+   python ota_server.py
+   ```
+3. In Home Assistant:
+   - Set `ota_url` text entity to: `http://YOUR_PC_IP:8080/esp32-p4-voice-assistant.bin`
+   - Press `ota_trigger` button
+4. Watch LED turn white (breathing) during update
+5. Device reboots automatically after successful update
+
+**Method 2: Custom HTTP Server**
+
+Host the binary file (`build/esp32-p4-voice-assistant.bin`) on any HTTP server and provide the URL to the device via MQTT.
+
+**OTA Server Features:**
+- Simple Python HTTP server on port 8080
+- Serves firmware from `build/` folder
+- Cross-platform (Windows batch and Python script)
+- No external dependencies
 
 ### ESP-IDF menuconfig
 
@@ -374,8 +477,8 @@ MIT License - Open source za educational i development svrhe.
 
 ---
 
-**Status:** ✅ **FULLY FUNCTIONAL** - Voice assistant with VAD and clean TTS audio
-**Last Updated:** 2025-12-02
+**Status:** ✅ **FULLY FUNCTIONAL** - Complete voice assistant with music player, OTA, and LED feedback
+**Last Updated:** 2025-12-10
 
 ---
 

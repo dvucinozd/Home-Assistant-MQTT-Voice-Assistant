@@ -58,27 +58,57 @@ Board USB-C Port → PC USB Port
 - Ploča bi trebala biti: **COM13** (USB/JTAG)
 - Ako je drugačiji, ažuriraj `flash.bat` file
 
-#### C. Opciono: LED Indikatori
+#### C. RGB LED Status Indicator (HW-478)
 
-Ako želiš dodati LED-ove za status:
+**Preporučeno:** Dodaj HW-478 RGB LED modul za vizualni status feedback:
+
 ```
-GPIO15 → [220Ω resistor] → LED (Listening)
-GPIO16 → [220Ω resistor] → LED (Processing)
+HW-478 Module → ESP32-P4
+VCC (Red wire)    → 3.3V
+GND (Black wire)  → GND
+R (Red LED)       → GPIO45
+G (Green LED)     → GPIO46
+B (Blue LED)      → GPIO47
 ```
+
+**LED Status Codes:**
+- 🟢 Green = Idle (čeka wake word)
+- 🔵 Blue Pulsing = Listening (snima glas)
+- 🟡 Yellow Blinking = Processing (STT)
+- 🟣 Purple Pulsing = Connecting (WiFi/MQTT)
+- ⚪ White Breathing = OTA Update
+- 🔴 Red Blinking = Error
+
+**Napomena:** LED je opcionalan - sistem će raditi i bez njega.
 
 ---
 
-### Korak 3: Konfiguracija WiFi Credentialsa
+### Korak 3: Konfiguracija WiFi i Home Assistant
 
-Uredi `main/config.h`:
+Kopiraj `main/config.h.example` u `main/config.h` i uredi credentials:
 
 ```c
+// WiFi Configuration
 #define WIFI_SSID "TvojaWiFiMreza"
 #define WIFI_PASSWORD "TvojaLozinka"
+
+// Home Assistant Configuration
+#define HA_HOSTNAME "homeassistant.local"  // ili IP adresa
+#define HA_PORT 8123
+#define HA_USE_SSL false
+#define HA_TOKEN "your_long_lived_access_token"
+
+// MQTT Configuration
+#define MQTT_BROKER_URI "mqtt://homeassistant.local:1883"
+#define MQTT_USERNAME "mqtt_user"  // ili NULL
+#define MQTT_PASSWORD "mqtt_password"  // ili NULL
 ```
 
-**⚠️ NAPOMENA:** Trenutno WiFi NIJE implementiran (ESP32-Hosted driver missing).
-Prvo ćemo testirati samo audio funkcionalnost.
+**Dobijanje HA Access Token:**
+1. Home Assistant → Profil (dolje lijevo)
+2. "Long-Lived Access Tokens" sekcija
+3. "Create Token"
+4. Kopiraj u `config.h`
 
 ---
 
@@ -136,20 +166,27 @@ idf.py -p COM13 flash monitor
 
 ---
 
-### Korak 6: Prvi Test - MP3 Player
+### Korak 6: Prvi Test - Voice Assistant
 
-Trenutna verzija projekta (base: mp3_player demo) će:
+Sistem će automatski pokrenuti:
 
-1. **Montirati SD karticu** (ako je prisutna)
-2. **Inicijalizirati ES8311 audio codec**
-3. **Reproducirati MP3 datoteke** iz `/music/` foldera
+1. **WiFi konekciju** na ESP32-C6 koprocessor
+2. **MQTT Home Assistant Discovery** - pojavi se kao "ESP32-P4 Voice Assistant"
+3. **Wake Word Detection** - reci "Hi ESP" za aktivaciju
+4. **Voice Pipeline** - VAD → STT → Intent → TTS
 
-**Testiraj zvuk:**
+**Testiraj glasovnu komandu:**
+1. Reci: **"Hi ESP"** (čut ćeš "beep" potvrdu)
+2. LED postane plavi (pulsing) = snima
+3. Reci: **"Turn on the lights"** (ili bilo koju HA komandu)
+4. LED žuti (blinking) = procesiranje
+5. Čuješ TTS odgovor iz zvučnika
+6. LED zeleni = čeka novu komandu
+
+**Opciono: Testiraj Music Player:**
 - Stavi MP3 datoteke na SD karticu u `/music/` folder
-- Resetiraj board
-- Trebao bi čuti muziku iz zvučnika!
-
-Ako nemaš SD karticu - ne brini, to je samo za test. Nastavit ćemo s Voice Assistant implementacijom.
+- U Home Assistant: Media Player kontrole (play/pause/stop/volume)
+- Wake word se automatski stopira tijekom reprodukcije glazbe
 
 ---
 
@@ -231,35 +268,44 @@ Nakon uspješnog flasha, provjeri:
 
 - [ ] **Serial monitor** prikazuje boot logs
 - [ ] **ES8311 codec** je inicijaliziran (vidi u logovima)
+- [ ] **WiFi connected** - vidi RSSI u logovima
+- [ ] **MQTT connected** - "Connected to MQTT broker"
+- [ ] **Home Assistant** vidi "ESP32-P4 Voice Assistant" uređaj
+- [ ] **Wake word detection** - reci "Hi ESP" i čuješ beep
+- [ ] **RGB LED** pokazuje status (ako je spojen)
 - [ ] **SD card** je montiran (ako je prisutan)
-- [ ] **Audio playback** radi (čuješ MP3)
 - [ ] **Board ne pregrijava** (touch test - warm, not hot)
 
 ---
 
 ## 🎯 Što Dalje?
 
-### Faza 1: Audio Verifikacija ✅ (Currently)
+### Testiranje Funkcionalnosti ✅
 
-Trenutno testiraj:
-- [x] Speaker output
-- [ ] Microphone input (dodati capture test)
-- [ ] Audio loopback (mic → speaker)
+Trenutno možeš testirati:
+- [x] **Wake word detection** - "Hi ESP"
+- [x] **Voice commands** - bilo koja HA komanda
+- [x] **Music player** - MP3 playback sa SD kartice
+- [x] **LED feedback** - vizualni status
+- [x] **MQTT controls** - svi parametri iz HA
+- [x] **OTA updates** - bežične nadogradnje
 
-### Faza 2: WiFi Setup
+### Napredne Funkcije
 
-Implementirati:
-- ESP32-Hosted driver za ESP32-C6
-- WiFi connection
-- mDNS discovery
+Eksperimentiraj sa:
+- **VAD tuning** - podesi `vad_threshold` za bolju detekciju
+- **WWD tuning** - podesi `wwd_threshold` za osjetljivost wake word
+- **AGC tuning** - automatska kontrola pojačanja mikrofona
+- **LED brightness** - prilagodi svjetlinu LED indikatora
+- **Music player** - dodaj svoje MP3 datoteke
+- **OTA updates** - bezžično flashaj nove verzije firmware-a
 
-### Faza 3: Voice Assistant
+### Dokumentacija
 
-Dodati:
-- Wake word detection (TFLite model)
-- VAD (Voice Activity Detection)
-- WebSocket connection to Home Assistant
-- STT/TTS integration
+Više informacija u:
+- `README.md` - kompletna dokumentacija
+- `MQTT_INTEGRATION.md` - MQTT entiteti i dashboard
+- `WAKENET_SD_CARD_SETUP.md` - WakeNet model setup
 
 ---
 
@@ -295,26 +341,33 @@ esptool.py --port COM13 read_flash 0x0 0x1000 flash_dump.bin
 
 ## 📝 Development Notes
 
-**Current Status:** Phase 1 - Audio Foundation
+**Current Status:** ✅ Fully Functional Voice Assistant
 
-**Working:**
-- ✅ Project structure
-- ✅ Build system (ESP-IDF)
-- ✅ ES8311 codec drivers (from demo)
-- ✅ Basic audio playback
+**Implementirano:**
+- ✅ WiFi connectivity (ESP32-C6 SDIO)
+- ✅ MQTT Home Assistant Discovery
+- ✅ Wake word detection (WakeNet9 "Hi ESP")
+- ✅ Voice Activity Detection (VAD)
+- ✅ Home Assistant Assist Pipeline integration
+- ✅ TTS playback with codec stability
+- ✅ RGB LED status indicator with effects
+- ✅ OTA firmware updates
+- ✅ Local music player (SD card MP3)
+- ✅ Auto Gain Control (AGC)
+- ✅ Runtime log level control
 
-**TODO:**
-- ⏳ Microphone capture
-- ⏳ WiFi connectivity
-- ⏳ Wake word detection
-- ⏳ Home Assistant integration
+**Napredne mogućnosti:**
+- Svi parametri podesivi iz Home Assistant
+- Bezžične nadogradnje firmware-a
+- Lokalno reproduciranje glazbe
+- Vizualni feedback preko RGB LED-a
 
 ---
 
 **Success!** 🎉
 
-Ako čuješ zvuk iz zvučnika, osnovni setup je uspješan!
+Ako vidiš "ESP32-P4 Voice Assistant" u Home Assistant-u i LED pokazuje status, sistem je potpuno funkcionalan!
 
-Sljedeći korak: Implementacija microphone capture i Voice Assistant logike.
+Za detaljnije informacije o svim funkcijama, pogledaj `README.md` → Development Roadmap.
 
-Prati progress u `README.md` → Development Roadmap sekciji.
+**Enjoy your voice assistant!** 🎤🤖
