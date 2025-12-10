@@ -11,8 +11,12 @@
 #include "esp_log.h"
 #include <string.h>
 #include <stdlib.h>
+#include "driver/i2s_std.h"
 
 static const char *TAG = "local_music";
+
+// External function from BSP to reconfigure codec sample rate
+extern esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch);
 
 #define MUSIC_DIR "/sdcard/music"
 
@@ -205,6 +209,14 @@ esp_err_t local_music_player_play(void)
     // Clear manual stop flag - user explicitly pressed play
     manual_stop = false;
 
+    // Reconfigure codec for MP3 playback (48kHz stereo is typical for MP3s)
+    // This is critical after voice recording which uses 16kHz mono
+    ESP_LOGI(TAG, "Configuring codec for music playback (48kHz stereo)");
+    esp_err_t codec_ret = bsp_extra_codec_set_fs(48000, 16, I2S_SLOT_MODE_STEREO);
+    if (codec_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to reconfigure codec, music may play at wrong speed");
+    }
+
     esp_err_t ret = bsp_extra_player_play_index(file_iterator, current_track_index);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to play track %d", current_track_index);
@@ -328,6 +340,13 @@ esp_err_t local_music_player_next(void)
     // Clear manual stop flag - user pressed next or track auto-advanced
     manual_stop = false;
 
+    // Reconfigure codec for MP3 playback
+    ESP_LOGI(TAG, "Configuring codec for music playback (48kHz stereo)");
+    esp_err_t codec_ret = bsp_extra_codec_set_fs(48000, 16, I2S_SLOT_MODE_STEREO);
+    if (codec_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to reconfigure codec");
+    }
+
     esp_err_t ret = bsp_extra_player_play_index(file_iterator, current_track_index);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to play next track");
@@ -362,6 +381,13 @@ esp_err_t local_music_player_previous(void)
 
     // Clear manual stop flag - user pressed previous
     manual_stop = false;
+
+    // Reconfigure codec for MP3 playback
+    ESP_LOGI(TAG, "Configuring codec for music playback (48kHz stereo)");
+    esp_err_t codec_ret = bsp_extra_codec_set_fs(48000, 16, I2S_SLOT_MODE_STEREO);
+    if (codec_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to reconfigure codec");
+    }
 
     esp_err_t ret = bsp_extra_player_play_index(file_iterator, current_track_index);
     if (ret != ESP_OK) {
