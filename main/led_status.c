@@ -48,7 +48,12 @@ static uint8_t current_b = 0;
  * @brief Apply RGB values to LEDs with brightness scaling
  */
 static void apply_rgb(uint8_t r, uint8_t g, uint8_t b) {
-  if (!led_initialized || !led_enabled) {
+  if (!led_initialized) {
+    return;
+  }
+
+  // Allow turning off LED even when led_enabled is false
+  if (!led_enabled && (r != 0 || g != 0 || b != 0)) {
     return;
   }
 
