@@ -36,6 +36,14 @@ esp_err_t ha_client_init(void);
 bool ha_client_is_connected(void);
 
 /**
+ * @brief Check if HA is ready to accept binary audio frames
+ *
+ * Audio streaming becomes ready after the Assist pipeline run-start event
+ * provides `stt_binary_handler_id`.
+ */
+bool ha_client_is_audio_ready(void);
+
+/**
  * @brief Send text to Home Assistant Assist Pipeline
  *
  * @param text Text to process (voice transcription)

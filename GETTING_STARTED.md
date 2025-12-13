@@ -305,7 +305,7 @@ Eksperimentiraj sa:
 Više informacija u:
 - `README.md` - kompletna dokumentacija
 - `MQTT_INTEGRATION.md` - MQTT entiteti i dashboard
-- `WAKENET_SD_CARD_SETUP.md` - WakeNet model setup
+- `WAKENET_SD_CARD_SETUP.md` - WakeNet model setup (flash default; SD optional)
 
 ---
 

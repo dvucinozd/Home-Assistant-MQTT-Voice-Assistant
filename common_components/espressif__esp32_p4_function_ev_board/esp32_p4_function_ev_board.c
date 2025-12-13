@@ -41,6 +41,8 @@ static lv_indev_t *disp_indev = NULL;
 
 sdmmc_card_t *bsp_sdcard = NULL;    // Global uSD card handler
 static bool i2c_initialized = false;
+
+static sd_pwr_ctrl_handle_t sd_pwr_ctrl_handle = NULL;
 static TaskHandle_t usb_host_task;  // USB Host Library task
 #if (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0))
 static i2c_master_bus_handle_t i2c_handle = NULL;  // I2C Handle
@@ -106,6 +108,10 @@ i2c_master_bus_handle_t bsp_i2c_get_handle(void)
 
 esp_err_t bsp_sdcard_mount(void)
 {
+    if (bsp_sdcard != NULL) {
+        return ESP_OK;
+    }
+
     const esp_vfs_fat_sdmmc_mount_config_t mount_config = {
 #ifdef CONFIG_BSP_SD_FORMAT_ON_MOUNT_FAIL
         .format_if_mount_failed = true,
@@ -123,13 +129,12 @@ esp_err_t bsp_sdcard_mount(void)
     sd_pwr_ctrl_ldo_config_t ldo_config = {
         .ldo_chan_id = 4,
     };
-    sd_pwr_ctrl_handle_t pwr_ctrl_handle = NULL;
-    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl_handle);
+    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &sd_pwr_ctrl_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create a new on-chip LDO power control driver");
         return ret;
     }
-    host.pwr_ctrl_handle = pwr_ctrl_handle;
+    host.pwr_ctrl_handle = sd_pwr_ctrl_handle;
 
     const sdmmc_slot_config_t slot_config = {
         /* SD card is connected to Slot 0 pins. Slot 0 uses IO MUX, so not specifying the pins here */
@@ -139,12 +144,37 @@ esp_err_t bsp_sdcard_mount(void)
         .flags = 0,
     };
 
-    return esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &bsp_sdcard);
+    esp_err_t mount_ret = esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &bsp_sdcard);
+    if (mount_ret != ESP_OK) {
+        // Avoid leaking the SD power-control driver handle on mount failure.
+        if (sd_pwr_ctrl_handle) {
+            (void)sd_pwr_ctrl_del_on_chip_ldo(sd_pwr_ctrl_handle);
+            sd_pwr_ctrl_handle = NULL;
+        }
+        bsp_sdcard = NULL;
+    }
+    return mount_ret;
 }
 
 esp_err_t bsp_sdcard_unmount(void)
 {
-    return esp_vfs_fat_sdcard_unmount(BSP_SD_MOUNT_POINT, bsp_sdcard);
+    if (bsp_sdcard == NULL) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = esp_vfs_fat_sdcard_unmount(BSP_SD_MOUNT_POINT, bsp_sdcard);
+    if (ret == ESP_OK) {
+        bsp_sdcard = NULL;
+
+        if (sd_pwr_ctrl_handle) {
+            esp_err_t pwr_ret = sd_pwr_ctrl_del_on_chip_ldo(sd_pwr_ctrl_handle);
+            if (pwr_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to delete SD power control driver");
+            }
+            sd_pwr_ctrl_handle = NULL;
+        }
+    }
+    return ret;
 }
 
 esp_err_t bsp_spiffs_mount(void)
@@ -201,12 +231,10 @@ esp_err_t bsp_audio_init(const i2s_std_config_t *i2s_config)
 
     if (i2s_tx_chan != NULL) {
         ESP_ERROR_CHECK(i2s_channel_init_std_mode(i2s_tx_chan, p_i2s_cfg));
-        ESP_ERROR_CHECK(i2s_channel_enable(i2s_tx_chan));
     }
 
     if (i2s_rx_chan != NULL) {
         ESP_ERROR_CHECK(i2s_channel_init_std_mode(i2s_rx_chan, p_i2s_cfg));
-        ESP_ERROR_CHECK(i2s_channel_enable(i2s_rx_chan));
     }
 
     audio_codec_i2s_cfg_t i2s_cfg = {
@@ -261,7 +289,9 @@ esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
     assert(es8311_dev);
 
     esp_codec_dev_cfg_t codec_dev_cfg = {
-        .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
+        // Speaker device: output only. Input is exposed via bsp_audio_codec_microphone_init().
+        // Using IN_OUT here causes redundant RX disables on close/reconfig (log spam / state churn).
+        .dev_type = ESP_CODEC_DEV_TYPE_OUT,
         .codec_if = es8311_dev,
         .data_if = i2s_data_if,
     };

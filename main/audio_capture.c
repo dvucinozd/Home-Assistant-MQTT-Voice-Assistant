@@ -10,6 +10,7 @@
 #include "config.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "vad.h"
 
@@ -25,6 +26,7 @@ static bool is_capturing = false;
 static bool vad_enabled = false;
 static vad_handle_t vad_handle = NULL;
 static audio_capture_mode_t capture_mode = CAPTURE_MODE_IDLE;
+static SemaphoreHandle_t capture_stopped_sem = NULL;
 
 // AGC state
 static bool agc_enabled = false;
@@ -37,6 +39,13 @@ static void capture_task(void *arg) {
   int16_t *buffer = (int16_t *)malloc(CAPTURE_BUFFER_SIZE * sizeof(int16_t));
   if (buffer == NULL) {
     ESP_LOGE(TAG, "Failed to allocate capture buffer");
+    if (capture_task_handle != NULL &&
+        xTaskGetCurrentTaskHandle() == capture_task_handle) {
+      capture_task_handle = NULL;
+    }
+    if (capture_stopped_sem) {
+      xSemaphoreGive(capture_stopped_sem);
+    }
     vTaskDelete(NULL);
     return;
   }
@@ -136,7 +145,24 @@ static void capture_task(void *arg) {
 
   free(buffer);
   ESP_LOGI(TAG, "Capture task stopped (chunks: %d)", chunk_count);
+  if (capture_task_handle != NULL &&
+      xTaskGetCurrentTaskHandle() == capture_task_handle) {
+    capture_task_handle = NULL;
+  }
+  if (capture_stopped_sem) {
+    xSemaphoreGive(capture_stopped_sem);
+  }
   vTaskDelete(NULL);
+}
+
+static void ensure_capture_stopped_sem(void) {
+  if (capture_stopped_sem == NULL) {
+    capture_stopped_sem = xSemaphoreCreateBinary();
+  }
+  if (capture_stopped_sem) {
+    // Ensure it's in the "given" state for the next start/stop cycle.
+    xSemaphoreGive(capture_stopped_sem);
+  }
 }
 
 esp_err_t audio_capture_init(void) {
@@ -145,6 +171,7 @@ esp_err_t audio_capture_init(void) {
   // BSP codec already initialized by bsp_extra_codec_init()
   // No need to create new I2S channel - just use existing one
 
+  ensure_capture_stopped_sem();
   ESP_LOGI(TAG, "Audio capture initialized (16kHz, mono, 16-bit)");
   return ESP_OK;
 }
@@ -153,6 +180,12 @@ esp_err_t audio_capture_start(audio_capture_callback_t callback) {
   if (is_capturing) {
     ESP_LOGW(TAG, "Already capturing");
     return ESP_OK;
+  }
+
+  ensure_capture_stopped_sem();
+  if (capture_stopped_sem) {
+    // Mark "not stopped" for this run.
+    xSemaphoreTake(capture_stopped_sem, 0);
   }
 
   // Reset codec to microphone configuration (16kHz MONO)
@@ -194,17 +227,41 @@ void audio_capture_stop(void) {
   wwd_callback = NULL;
   capture_mode = CAPTURE_MODE_IDLE;
 
-  // Wait for task to finish
-  if (capture_task_handle != NULL) {
-    vTaskDelay(pdMS_TO_TICKS(100)); // Give task time to exit
-    capture_task_handle = NULL;
-  }
-
   ESP_LOGI(TAG, "Audio capture stopped");
 }
 
-void audio_capture_deinit(void) {
+esp_err_t audio_capture_stop_wait(uint32_t timeout_ms) {
+  if (!is_capturing) {
+    return ESP_OK;
+  }
+
+  // If called from the capture task context, we can't wait for ourselves.
+  if (capture_task_handle != NULL &&
+      xTaskGetCurrentTaskHandle() == capture_task_handle) {
+    audio_capture_stop();
+    return ESP_OK;
+  }
+
   audio_capture_stop();
+
+  if (capture_stopped_sem == NULL) {
+    return ESP_OK;
+  }
+
+  TickType_t ticks =
+      (timeout_ms == 0) ? 0 : pdMS_TO_TICKS(timeout_ms);
+  if (xSemaphoreTake(capture_stopped_sem, ticks) != pdTRUE) {
+    ESP_LOGW(TAG, "Timed out waiting for capture task to stop");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  // Task has exited; clear handle.
+  capture_task_handle = NULL;
+  return ESP_OK;
+}
+
+void audio_capture_deinit(void) {
+  audio_capture_stop_wait(1000);
 
   if (vad_handle != NULL) {
     vad_deinit(vad_handle);
@@ -219,6 +276,12 @@ esp_err_t audio_capture_enable_vad(const vad_config_t *config,
   if (config == NULL) {
     ESP_LOGE(TAG, "Invalid VAD config");
     return ESP_ERR_INVALID_ARG;
+  }
+
+  // Re-init safely if already enabled (avoid leaking previous handle)
+  if (vad_handle != NULL) {
+    vad_deinit(vad_handle);
+    vad_handle = NULL;
   }
 
   // Initialize VAD
@@ -267,6 +330,12 @@ audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t wwd_cb) {
   }
 
   ESP_LOGI(TAG, "Starting wake word detection mode");
+
+  ensure_capture_stopped_sem();
+  if (capture_stopped_sem) {
+    // Mark "not stopped" for this run.
+    xSemaphoreTake(capture_stopped_sem, 0);
+  }
 
   // Reset codec to microphone configuration (16kHz MONO)
   // This is critical after TTS playback which uses 24kHz STEREO

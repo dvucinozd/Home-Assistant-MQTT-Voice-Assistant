@@ -12,6 +12,7 @@
 #include "esp_spiffs.h"
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -41,6 +42,7 @@
 #include "webserial.h"
 #include "wifi_manager.h"
 #include "wwd.h"
+#include "va_control.h"
 
 #define TAG "mp3_player"
 #define BUTTON_IO_NUM 35
@@ -52,6 +54,289 @@ static void timer_finished_callback(uint8_t timer_id, const char *timer_name);
 static void alarm_triggered_callback(uint8_t alarm_id, const char *alarm_label);
 static void intent_handler(const char *intent_name, const char *intent_data, const char *conversation_id);
 static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples);
+static void on_wake_word_detected(wwd_event_t event, void *user_data);
+static void test_audio_streaming(void);
+static void restart_task(void *arg);
+
+typedef enum {
+  AUDIO_CMD_WAKE_DETECTED,
+  AUDIO_CMD_RESUME_WWD,
+  AUDIO_CMD_PIPELINE_ERROR_RESUME,
+  AUDIO_CMD_STOP_WWD,
+  AUDIO_CMD_RESTART_WWD,
+  AUDIO_CMD_TIMER_BEEP,
+  AUDIO_CMD_ALARM_BEEP,
+  AUDIO_CMD_TIMER_CONFIRM_BEEP,
+  AUDIO_CMD_TIMER_ERROR_BEEP,
+  AUDIO_CMD_MUSIC_PLAY,
+  AUDIO_CMD_MUSIC_STOP,
+  AUDIO_CMD_MUSIC_PAUSE,
+  AUDIO_CMD_MUSIC_RESUME,
+  AUDIO_CMD_MUSIC_NEXT,
+  AUDIO_CMD_MUSIC_PREVIOUS,
+} audio_cmd_t;
+
+static QueueHandle_t audio_cmd_queue = NULL;
+static TaskHandle_t audio_cmd_task_handle = NULL;
+static volatile bool wake_detect_pending = false;
+static bool music_paused_for_notification = false;
+static esp_err_t wwd_init_result = ESP_FAIL;
+static float wwd_threshold = 0.5f;
+static esp_err_t init_wake_word_detection_if_needed(void);
+
+static void audio_post_cmd(audio_cmd_t cmd);
+
+static void audio_post_cmd(audio_cmd_t cmd) {
+  if (audio_cmd_queue == NULL) {
+    return;
+  }
+  (void)xQueueSend(audio_cmd_queue, &cmd, 0);
+}
+
+static void audio_cmd_task(void *arg) {
+  (void)arg;
+  audio_cmd_t cmd;
+
+  while (xQueueReceive(audio_cmd_queue, &cmd, portMAX_DELAY) == pdTRUE) {
+    switch (cmd) {
+    case AUDIO_CMD_WAKE_DETECTED: {
+      // Ensure wake word mode is fully stopped before reconfiguring audio
+      wwd_stop();
+      (void)audio_capture_stop_wait(1000);
+
+      // Small delay to allow codec/I2S to settle after stopping capture
+      vTaskDelay(pdMS_TO_TICKS(50));
+
+      ESP_LOGI(TAG, "🔊 Playing wake word confirmation beep...");
+      extern esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration,
+                                      uint8_t volume);
+      esp_err_t beep_ret = beep_tone_play(800, 120, 40);
+      if (beep_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to play beep tone: %s", esp_err_to_name(beep_ret));
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(50));
+
+      ESP_LOGI(TAG, "Starting voice pipeline...");
+      test_audio_streaming();
+
+      wake_detect_pending = false;
+      break;
+    }
+
+    case AUDIO_CMD_RESUME_WWD: {
+      // Don't try to listen while local music is actively playing (codec/I2S conflict)
+      if (local_music_player_is_initialized() &&
+          (local_music_player_get_state() == MUSIC_STATE_PLAYING ||
+           local_music_player_get_state() == MUSIC_STATE_PAUSED)) {
+        ESP_LOGI(TAG, "Skipping WWD resume (music is playing)");
+        wake_detect_pending = false;
+        break;
+      }
+
+      if (wwd_init_result != ESP_OK) {
+        ESP_LOGW(TAG, "Skipping WWD resume (WWD not initialized)");
+        wake_detect_pending = false;
+        break;
+      }
+
+      // Stop any ongoing capture before resuming wake word mode
+      (void)audio_capture_stop_wait(1000);
+
+      // Stop WWD if it's already running (avoid "WWD already running" warning)
+      wwd_stop();
+      vTaskDelay(pdMS_TO_TICKS(50));
+
+      wwd_start();
+      audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+      vTaskDelay(pdMS_TO_TICKS(100));
+
+      // Set LED to IDLE (green) and update status
+      led_status_set(LED_STATUS_IDLE);
+      if (mqtt_ha_is_connected()) {
+        mqtt_ha_update_sensor("va_status", "SPREMAN");
+      }
+
+      ESP_LOGI(TAG, "✅ Wake word detection resumed - ready for next command");
+      break;
+    }
+
+    case AUDIO_CMD_PIPELINE_ERROR_RESUME: {
+      // Wait a bit before resuming wake word mode
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+      break;
+    }
+
+    case AUDIO_CMD_STOP_WWD: {
+      wwd_stop();
+      (void)audio_capture_stop_wait(1000);
+      break;
+    }
+
+    case AUDIO_CMD_RESTART_WWD: {
+      bool was_running = wwd_is_running();
+
+      wwd_stop();
+      (void)audio_capture_stop_wait(1000);
+      wwd_deinit();
+
+      wwd_config_t wwd_config = wwd_get_default_config();
+      wwd_config.callback = on_wake_word_detected;
+      wwd_config.user_data = NULL;
+      wwd_config.detection_threshold = wwd_threshold;
+
+      wwd_init_result = wwd_init(&wwd_config);
+      if (wwd_init_result == ESP_OK) {
+        ESP_LOGI(TAG, "WWD restarted with new threshold %.2f", wwd_threshold);
+        if (was_running) {
+          audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+        }
+      } else {
+        ESP_LOGE(TAG, "Failed to restart WWD: %s", esp_err_to_name(wwd_init_result));
+      }
+      break;
+    }
+
+    case AUDIO_CMD_TIMER_BEEP:
+    case AUDIO_CMD_ALARM_BEEP: {
+      // Stop listening/recording and pause music to avoid codec/I2S conflicts.
+      wwd_stop();
+      (void)audio_capture_stop_wait(1000);
+
+      music_paused_for_notification = false;
+      if (local_music_player_is_initialized() &&
+          local_music_player_get_state() == MUSIC_STATE_PLAYING) {
+        ESP_LOGI(TAG, "Pausing music for notification beep(s)");
+        if (local_music_player_pause() == ESP_OK) {
+          music_paused_for_notification = true;
+          vTaskDelay(pdMS_TO_TICKS(50));
+        }
+      }
+
+      extern esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration,
+                                      uint8_t volume);
+
+      if (cmd == AUDIO_CMD_TIMER_BEEP) {
+        ESP_LOGI(TAG, "Playing timer notification (3 beeps)");
+        for (int i = 0; i < 3; i++) {
+          beep_tone_play(1000, 200, 90);
+          vTaskDelay(pdMS_TO_TICKS(300));
+        }
+      } else {
+        ESP_LOGI(TAG, "Playing alarm notification (10 beeps)");
+        for (int i = 0; i < 10; i++) {
+          beep_tone_play(1500, 250, 90);
+          vTaskDelay(pdMS_TO_TICKS(250));
+        }
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(200));
+
+      // Resume music if we paused it; keep WWD disabled while music plays.
+      if (music_paused_for_notification && local_music_player_is_initialized()) {
+        ESP_LOGI(TAG, "Resuming music after notification");
+        local_music_player_resume();
+        music_paused_for_notification = false;
+
+        if (local_music_player_get_state() == MUSIC_STATE_PLAYING) {
+          ESP_LOGI(TAG, "Keeping WWD disabled while music is playing");
+          break;
+        }
+      }
+
+      audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+      break;
+    }
+
+    case AUDIO_CMD_TIMER_CONFIRM_BEEP:
+    case AUDIO_CMD_TIMER_ERROR_BEEP: {
+      // Short beeps used for feedback during pipeline (do not auto-resume WWD here)
+      (void)audio_capture_stop_wait(1000);
+
+      bool paused_music = false;
+      if (local_music_player_is_initialized() &&
+          local_music_player_get_state() == MUSIC_STATE_PLAYING) {
+        ESP_LOGI(TAG, "Pausing music for confirmation/error beep");
+        if (local_music_player_pause() == ESP_OK) {
+          paused_music = true;
+          vTaskDelay(pdMS_TO_TICKS(50));
+        }
+      }
+
+      extern esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration,
+                                      uint8_t volume);
+      if (cmd == AUDIO_CMD_TIMER_CONFIRM_BEEP) {
+        beep_tone_play(1200, 100, 90);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        beep_tone_play(1200, 100, 90);
+      } else {
+        beep_tone_play(400, 300, 60);
+      }
+
+      if (paused_music && local_music_player_is_initialized()) {
+        ESP_LOGI(TAG, "Resuming music after confirmation/error beep");
+        local_music_player_resume();
+      }
+      break;
+    }
+
+    case AUDIO_CMD_MUSIC_PLAY: {
+      if (!local_music_player_is_initialized()) {
+        ESP_LOGW(TAG, "Music player not initialized (SD card not mounted?)");
+        break;
+      }
+
+      // Ensure capture is stopped before switching codec to music playback.
+      wwd_stop();
+      (void)audio_capture_stop_wait(1000);
+
+      (void)local_music_player_play();
+      break;
+    }
+
+    case AUDIO_CMD_MUSIC_STOP: {
+      if (local_music_player_is_initialized()) {
+        (void)local_music_player_stop();
+      }
+      break;
+    }
+
+    case AUDIO_CMD_MUSIC_PAUSE: {
+      if (local_music_player_is_initialized()) {
+        (void)local_music_player_pause();
+      }
+      break;
+    }
+
+    case AUDIO_CMD_MUSIC_RESUME: {
+      if (local_music_player_is_initialized()) {
+        (void)local_music_player_resume();
+      }
+      break;
+    }
+
+    case AUDIO_CMD_MUSIC_NEXT: {
+      if (local_music_player_is_initialized()) {
+        (void)local_music_player_next();
+      }
+      break;
+    }
+
+    case AUDIO_CMD_MUSIC_PREVIOUS: {
+      if (local_music_player_is_initialized()) {
+        (void)local_music_player_previous();
+      }
+      break;
+    }
+
+    default:
+      break;
+    }
+  }
+
+  vTaskDelete(NULL);
+}
 
 static void conversation_response_handler(const char *response_text,
                                           const char *conversation_id) {
@@ -66,20 +351,7 @@ static void conversation_response_handler(const char *response_text,
       mqtt_ha_update_sensor("va_status", "SPREMAN");
     }
 
-    // Stop any ongoing audio capture before resuming wake word
-    audio_capture_stop();
-    vTaskDelay(pdMS_TO_TICKS(100)); // Small delay to ensure task stops
-
-    // Stop WWD if it's already running (avoid "WWD already running" warning)
-    wwd_stop();
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    // Resume wake word detection
-    wwd_start();
-    audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-    vTaskDelay(pdMS_TO_TICKS(100)); // Give I2S time to initialize before task starts reading
-
-    ESP_LOGI(TAG, "✅ Wake word detection resumed - ready for next command");
+    audio_post_cmd(AUDIO_CMD_RESUME_WWD);
     return;
   }
 
@@ -112,30 +384,30 @@ static void conversation_response_handler(const char *response_text,
           strstr(response_lower, "start music") ||
           strstr(response_lower, "play song")) {
         ESP_LOGI(TAG, "🎵 Voice command: Play music");
-        local_music_player_play();
+        audio_post_cmd(AUDIO_CMD_MUSIC_PLAY);
       } else if (strstr(response_lower, "stop music") ||
                  strstr(response_lower, "stop song")) {
         ESP_LOGI(TAG, "🎵 Voice command: Stop music");
-        local_music_player_stop();
+        audio_post_cmd(AUDIO_CMD_MUSIC_STOP);
       } else if (strstr(response_lower, "pause music") ||
                  strstr(response_lower, "pause song")) {
         ESP_LOGI(TAG, "🎵 Voice command: Pause music");
-        local_music_player_pause();
+        audio_post_cmd(AUDIO_CMD_MUSIC_PAUSE);
       } else if (strstr(response_lower, "resume music") ||
                  strstr(response_lower, "resume song") ||
                  strstr(response_lower, "continue music")) {
         ESP_LOGI(TAG, "🎵 Voice command: Resume music");
-        local_music_player_resume();
+        audio_post_cmd(AUDIO_CMD_MUSIC_RESUME);
       } else if (strstr(response_lower, "next song") ||
                  strstr(response_lower, "next track") ||
                  strstr(response_lower, "skip")) {
         ESP_LOGI(TAG, "🎵 Voice command: Next track");
-        local_music_player_next();
+        audio_post_cmd(AUDIO_CMD_MUSIC_NEXT);
       } else if (strstr(response_lower, "previous song") ||
                  strstr(response_lower, "previous track") ||
                  strstr(response_lower, "go back")) {
         ESP_LOGI(TAG, "🎵 Voice command: Previous track");
-        local_music_player_previous();
+        audio_post_cmd(AUDIO_CMD_MUSIC_PREVIOUS);
       }
 
       free(response_lower);
@@ -167,6 +439,21 @@ static void network_event_callback(network_type_t type, bool connected) {
         ESP_LOGI(
             TAG,
             "✅ SD card mounted successfully - local music playback enabled");
+
+#ifdef CONFIG_MODEL_IN_SDCARD
+        // In SD-model mode, WakeNet init may have failed at boot because /sdcard
+        // wasn't mounted yet. Retry now that SD is available.
+        if (wwd_init_result != ESP_OK) {
+          ESP_LOGI(TAG, "Retrying WakeNet init now that SD is mounted...");
+          (void)init_wake_word_detection_if_needed();
+
+          // Only auto-resume if we are not currently streaming/recording.
+          if (wwd_init_result == ESP_OK && !pipeline_active &&
+              audio_capture_get_mode() != CAPTURE_MODE_RECORDING) {
+            audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+          }
+        }
+#endif
 
         esp_err_t music_ret = local_music_player_init();
         if (music_ret == ESP_OK) {
@@ -254,29 +541,156 @@ static uint32_t vad_threshold = 180;
 static uint32_t vad_silence_duration = 1800;
 static uint32_t vad_min_speech = 200;
 static uint32_t vad_max_recording = 7000;
-static float wwd_threshold = 0.5f;
 
 // AGC configuration
 static bool agc_enabled = true; // Enabled by default
 static uint16_t agc_target_level = 4000;
 
+// =============================================================================
+// VA Control API (used by web UI)
+// =============================================================================
+
+static float clamp_float(float v, float lo, float hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+
+float va_control_get_wwd_threshold(void) { return wwd_threshold; }
+uint32_t va_control_get_vad_threshold(void) { return vad_threshold; }
+uint32_t va_control_get_vad_silence_duration_ms(void) { return vad_silence_duration; }
+uint32_t va_control_get_vad_min_speech_ms(void) { return vad_min_speech; }
+uint32_t va_control_get_vad_max_recording_ms(void) { return vad_max_recording; }
+bool va_control_get_agc_enabled(void) { return agc_enabled; }
+uint16_t va_control_get_agc_target_level(void) { return agc_target_level; }
+bool va_control_get_pipeline_active(void) { return pipeline_active; }
+bool va_control_get_wwd_running(void) { return wwd_is_running(); }
+
+esp_err_t va_control_set_wwd_threshold(float threshold) {
+  wwd_threshold = clamp_float(threshold, 0.05f, 0.99f);
+  if (mqtt_ha_is_connected()) {
+    mqtt_ha_update_number("wwd_threshold", wwd_threshold);
+  }
+  audio_post_cmd(AUDIO_CMD_RESTART_WWD);
+  return ESP_OK;
+}
+
+esp_err_t va_control_set_vad_threshold(uint32_t threshold) {
+  vad_threshold = threshold;
+  if (mqtt_ha_is_connected()) {
+    mqtt_ha_update_number("vad_threshold", (float)vad_threshold);
+  }
+  return ESP_OK;
+}
+
+esp_err_t va_control_set_vad_silence_duration_ms(uint32_t ms) {
+  vad_silence_duration = ms;
+  if (mqtt_ha_is_connected()) {
+    mqtt_ha_update_number("vad_silence_duration", (float)vad_silence_duration);
+  }
+  return ESP_OK;
+}
+
+esp_err_t va_control_set_vad_min_speech_ms(uint32_t ms) {
+  vad_min_speech = ms;
+  if (mqtt_ha_is_connected()) {
+    mqtt_ha_update_number("vad_min_speech", (float)vad_min_speech);
+  }
+  return ESP_OK;
+}
+
+esp_err_t va_control_set_vad_max_recording_ms(uint32_t ms) {
+  vad_max_recording = ms;
+  if (mqtt_ha_is_connected()) {
+    mqtt_ha_update_number("vad_max_recording", (float)vad_max_recording);
+  }
+  return ESP_OK;
+}
+
+esp_err_t va_control_set_agc_enabled(bool enabled) {
+  if (enabled) {
+    esp_err_t ret = audio_capture_enable_agc(agc_target_level);
+    if (ret != ESP_OK) {
+      agc_enabled = false;
+      if (mqtt_ha_is_connected()) {
+        mqtt_ha_update_switch("agc_enabled", false);
+      }
+      return ret;
+    }
+    agc_enabled = true;
+    if (mqtt_ha_is_connected()) {
+      mqtt_ha_update_switch("agc_enabled", true);
+    }
+    return ESP_OK;
+  }
+
+  audio_capture_disable_agc();
+  agc_enabled = false;
+  if (mqtt_ha_is_connected()) {
+    mqtt_ha_update_switch("agc_enabled", false);
+  }
+  return ESP_OK;
+}
+
+esp_err_t va_control_set_agc_target_level(uint16_t target_level) {
+  agc_target_level = target_level;
+  if (mqtt_ha_is_connected()) {
+    mqtt_ha_update_number("agc_target_level", (float)agc_target_level);
+  }
+  if (agc_enabled) {
+    return audio_capture_set_agc_target(agc_target_level);
+  }
+  return ESP_OK;
+}
+
+void va_control_action_restart(void) {
+  (void)xTaskCreate(restart_task, "restart", 2048, NULL, 3, NULL);
+}
+void va_control_action_wwd_resume(void) { audio_post_cmd(AUDIO_CMD_RESUME_WWD); }
+void va_control_action_wwd_stop(void) { audio_post_cmd(AUDIO_CMD_STOP_WWD); }
+void va_control_action_test_tts(const char *text) {
+  if (text == NULL || text[0] == '\0') {
+    return;
+  }
+  (void)ha_client_request_tts(text);
+}
+
 static void test_audio_streaming(void);
 static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples);
-static void on_wake_word_detected(wwd_event_t event, void *user_data);
+
+static esp_err_t init_wake_word_detection_if_needed(void) {
+  if (wwd_init_result == ESP_OK) {
+    return ESP_OK;
+  }
+
+  ESP_LOGI(TAG, "Initializing Wake Word Detection (retry)...");
+  wwd_config_t wwd_config = wwd_get_default_config();
+  wwd_config.callback = on_wake_word_detected;
+  wwd_config.user_data = NULL;
+  wwd_config.detection_threshold = wwd_threshold;
+
+  wwd_init_result = wwd_init(&wwd_config);
+  if (wwd_init_result == ESP_OK) {
+    ESP_LOGI(TAG, "Wake Word Detection initialized successfully!");
+  } else {
+    ESP_LOGW(TAG, "Wake Word Detection init failed: %s",
+             esp_err_to_name(wwd_init_result));
+  }
+  return wwd_init_result;
+}
 
 static void mqtt_wwd_switch_callback(const char *entity_id,
                                      const char *payload) {
   ESP_LOGI(TAG, "MQTT: WWD switch = %s", payload);
 
   if (strcmp(payload, "ON") == 0) {
-    wwd_start();
-    audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+    audio_post_cmd(AUDIO_CMD_RESUME_WWD);
     mqtt_ha_update_switch("wwd_enabled", true);
     led_status_set(LED_STATUS_IDLE); // Green - wake word ready
     ESP_LOGI(TAG, "Wake Word Detection enabled via MQTT");
   } else {
-    wwd_stop();
-    audio_capture_stop();
+    // Don't block inside MQTT event handler; stop happens in audio_cmd_task.
+    audio_post_cmd(AUDIO_CMD_STOP_WWD);
     mqtt_ha_update_switch("wwd_enabled", false);
     ESP_LOGI(TAG, "Wake Word Detection disabled via MQTT");
   }
@@ -309,58 +723,49 @@ static void mqtt_webserial_switch_callback(const char *entity_id,
 static void mqtt_music_play_callback(const char *entity_id,
                                      const char *payload) {
   ESP_LOGI(TAG, "MQTT: Play music button pressed");
-  if (local_music_player_is_initialized()) {
-    local_music_player_play();
-  } else {
-    ESP_LOGW(TAG, "Music player not initialized (SD card not mounted?)");
-  }
+  audio_post_cmd(AUDIO_CMD_MUSIC_PLAY);
 }
 
 static void mqtt_music_stop_callback(const char *entity_id,
                                      const char *payload) {
   ESP_LOGI(TAG, "MQTT: Stop music button pressed");
-  if (local_music_player_is_initialized()) {
-    local_music_player_stop();
-  }
+  audio_post_cmd(AUDIO_CMD_MUSIC_STOP);
 }
 
 static void mqtt_music_pause_callback(const char *entity_id,
-                                      const char *payload) {
+                                       const char *payload) {
   ESP_LOGI(TAG, "MQTT: Pause music button pressed");
-  if (local_music_player_is_initialized()) {
-    local_music_player_pause();
-  }
+  audio_post_cmd(AUDIO_CMD_MUSIC_PAUSE);
 }
 
 static void mqtt_music_resume_callback(const char *entity_id,
-                                       const char *payload) {
+                                        const char *payload) {
   ESP_LOGI(TAG, "MQTT: Resume music button pressed");
-  if (local_music_player_is_initialized()) {
-    local_music_player_resume();
-  }
+  audio_post_cmd(AUDIO_CMD_MUSIC_RESUME);
 }
 
 static void mqtt_music_next_callback(const char *entity_id,
-                                     const char *payload) {
+                                      const char *payload) {
   ESP_LOGI(TAG, "MQTT: Next track button pressed");
-  if (local_music_player_is_initialized()) {
-    local_music_player_next();
-  }
+  audio_post_cmd(AUDIO_CMD_MUSIC_NEXT);
 }
 
 static void mqtt_music_previous_callback(const char *entity_id,
-                                         const char *payload) {
+                                           const char *payload) {
   ESP_LOGI(TAG, "MQTT: Previous track button pressed");
-  if (local_music_player_is_initialized()) {
-    local_music_player_previous();
-  }
+  audio_post_cmd(AUDIO_CMD_MUSIC_PREVIOUS);
+}
+
+static void restart_task(void *arg) {
+  (void)arg;
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  esp_restart();
 }
 
 static void mqtt_restart_callback(const char *entity_id, const char *payload) {
   ESP_LOGI(TAG, "MQTT: Restart button pressed!");
   ESP_LOGI(TAG, "Restarting in 2 seconds...");
-  vTaskDelay(pdMS_TO_TICKS(2000));
-  esp_restart();
+  (void)xTaskCreate(restart_task, "restart", 2048, NULL, 3, NULL);
 }
 
 static void mqtt_test_tts_callback(const char *entity_id, const char *payload) {
@@ -522,25 +927,8 @@ static void mqtt_wwd_threshold_callback(const char *entity_id,
   wwd_threshold = atof(payload);
   ESP_LOGI(TAG, "MQTT: WWD threshold updated to %.2f", wwd_threshold);
 
-  if (wwd_is_running()) {
-    wwd_stop();
-    audio_capture_stop();
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    wwd_config_t wwd_config = wwd_get_default_config();
-    wwd_config.callback = on_wake_word_detected;
-    wwd_config.user_data = NULL;
-    wwd_config.detection_threshold = wwd_threshold;
-
-    esp_err_t ret = wwd_init(&wwd_config);
-    if (ret == ESP_OK) {
-      wwd_start();
-      audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-      ESP_LOGI(TAG, "WWD restarted with new threshold");
-    } else {
-      ESP_LOGE(TAG, "Failed to restart WWD with new threshold");
-    }
-  }
+  // Don't block inside MQTT event handler; restart happens in audio_cmd_task.
+  audio_post_cmd(AUDIO_CMD_RESTART_WWD);
 
   mqtt_ha_update_number("wwd_threshold", wwd_threshold);
 }
@@ -720,6 +1108,13 @@ static void on_wake_word_detected(wwd_event_t event, void *user_data) {
   if (event == WWD_EVENT_DETECTED) {
     ESP_LOGI(TAG, "🎤 Wake word detected!");
 
+    // Avoid re-entrancy if multiple detections fire close together
+    if (wake_detect_pending) {
+      ESP_LOGW(TAG, "Wake already pending - ignoring");
+      return;
+    }
+    wake_detect_pending = true;
+
     // Set LED to LISTENING (blue pulsing)
     led_status_set(LED_STATUS_LISTENING);
 
@@ -731,24 +1126,7 @@ static void on_wake_word_detected(wwd_event_t event, void *user_data) {
     }
     // ═══════════════════════════════════════════════════════════════════
 
-    wwd_stop();
-    audio_capture_stop();
-    ESP_LOGI(TAG, "Wake word mode stopped");
-
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    ESP_LOGI(TAG, "🔊 Playing wake word confirmation beep...");
-    extern esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration,
-                                    uint8_t volume);
-    esp_err_t beep_ret = beep_tone_play(800, 120, 40);
-    if (beep_ret != ESP_OK) {
-      ESP_LOGW(TAG, "Failed to play beep tone: %s", esp_err_to_name(beep_ret));
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    ESP_LOGI(TAG, "Starting voice pipeline...");
-    test_audio_streaming();
+    audio_post_cmd(AUDIO_CMD_WAKE_DETECTED);
   }
 }
 
@@ -777,12 +1155,16 @@ static void tts_playback_complete_handler(void) {
     ESP_LOGI(TAG, "Resuming music playback after TTS");
     local_music_player_resume();
     music_paused_for_tts = false;
+
+    // If music is now playing, keep WWD disabled to avoid codec conflicts.
+    if (local_music_player_get_state() == MUSIC_STATE_PLAYING ||
+        local_music_player_get_state() == MUSIC_STATE_PAUSED) {
+      ESP_LOGI(TAG, "Keeping WWD disabled while music is playing");
+      return;
+    }
   }
 
-  wwd_start();
-  audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-
-  ESP_LOGI(TAG, "✅ Wake word detection resumed - ready for next command");
+  audio_post_cmd(AUDIO_CMD_RESUME_WWD);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -802,19 +1184,8 @@ static void pipeline_error_handler(const char *error_code, const char *error_mes
   }
   audio_chunks_sent = 0;
 
-  ESP_LOGI(TAG, "Pipeline state cleaned up, resuming wake word detection in 2 seconds...");
-
-  // Wait a bit before resuming wake word mode
-  vTaskDelay(pdMS_TO_TICKS(2000));
-
-  // Resume wake word detection
-  wwd_start();
-  audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-
-  // Set LED to IDLE (green)
-  led_status_set(LED_STATUS_IDLE);
-
-  ESP_LOGI(TAG, "✅ Wake word detection resumed after pipeline error");
+  ESP_LOGI(TAG, "Pipeline state cleaned up, scheduling wake word resume...");
+  audio_post_cmd(AUDIO_CMD_PIPELINE_ERROR_RESUME);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -823,17 +1194,18 @@ static void pipeline_error_handler(const char *error_code, const char *error_mes
 static void music_player_event_handler(music_state_t state, int current_track, int total_tracks) {
   ESP_LOGI(TAG, "Music player state changed: %d (track %d/%d)", state, current_track + 1, total_tracks);
 
+  if (state == MUSIC_STATE_PLAYING || state == MUSIC_STATE_PAUSED) {
+    ESP_LOGI(TAG, "Music started - disabling wake word detection to avoid codec conflicts");
+    audio_post_cmd(AUDIO_CMD_STOP_WWD);
+  }
+
   if (state == MUSIC_STATE_STOPPED) {
     ESP_LOGI(TAG, "Music playback stopped - resuming wake word detection...");
 
     // Set LED back to IDLE (green)
     led_status_set(LED_STATUS_IDLE);
 
-    // Resume wake word detection
-    wwd_start();
-    audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-
-    ESP_LOGI(TAG, "✅ Wake word detection resumed after music stopped");
+    audio_post_cmd(AUDIO_CMD_RESUME_WWD);
   }
 }
 
@@ -849,30 +1221,8 @@ static void timer_finished_callback(uint8_t timer_id, const char *timer_name) {
     mqtt_ha_update_sensor("timer_finished", timer_name ? timer_name : "");
   }
 
-  // Stop audio capture before playing beeps (beep_tone reinitializes I2S)
-  ESP_LOGI(TAG, "Stopping wake word detection for timer beeps...");
-  audio_capture_stop();
-  vTaskDelay(pdMS_TO_TICKS(100));
-
-  // Play beep sound (3 beeps)
-  for (int i = 0; i < 3; i++) {
-    beep_tone_play(1000, 200, 90); // 1kHz, 200ms, 90% volume
-    vTaskDelay(pdMS_TO_TICKS(300));
-  }
-
-  // Resume wake word detection
-  ESP_LOGI(TAG, "Resuming wake word detection after timer beeps...");
-  vTaskDelay(pdMS_TO_TICKS(200)); // Delay after last beep for codec to stabilize
-
-  // Stop WWD if it's already running (avoid "WWD already running" warning)
-  wwd_stop();
-  vTaskDelay(pdMS_TO_TICKS(50));
-
-  wwd_start();
-  audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-  vTaskDelay(pdMS_TO_TICKS(100)); // Give I2S time to initialize before task starts reading
-
-  ESP_LOGI(TAG, "Timer notification complete");
+  // Defer beeps and resume logic to audio command task (avoid blocking timer_mgr task)
+  audio_post_cmd(AUDIO_CMD_TIMER_BEEP);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -892,30 +1242,8 @@ static void alarm_triggered_callback(uint8_t alarm_id, const char *alarm_label) 
     mqtt_ha_update_sensor("alarm_triggered", alarm_label ? alarm_label : "");
   }
 
-  // Stop audio capture before playing beeps (beep_tone reinitializes I2S)
-  ESP_LOGI(TAG, "Stopping wake word detection for alarm beeps...");
-  audio_capture_stop();
-  vTaskDelay(pdMS_TO_TICKS(100));
-
-  // Play alarm sound (continuous beeps for 5 seconds)
-  for (int i = 0; i < 10; i++) {
-    beep_tone_play(1500, 250, 90); // 1.5kHz, 250ms, 90% volume
-    vTaskDelay(pdMS_TO_TICKS(250));
-  }
-
-  // Resume wake word detection
-  ESP_LOGI(TAG, "Resuming wake word detection after alarm beeps...");
-  vTaskDelay(pdMS_TO_TICKS(200)); // Delay after last beep for codec to stabilize
-
-  // Stop WWD if it's already running (avoid "WWD already running" warning)
-  wwd_stop();
-  vTaskDelay(pdMS_TO_TICKS(50));
-
-  wwd_start();
-  audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-  vTaskDelay(pdMS_TO_TICKS(100)); // Give I2S time to initialize before task starts reading
-
-  ESP_LOGI(TAG, "Alarm notification complete");
+  // Defer beeps and resume logic to audio command task (avoid blocking timer_mgr task)
+  audio_post_cmd(AUDIO_CMD_ALARM_BEEP);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -994,10 +1322,7 @@ static void intent_handler(const char *intent_name, const char *intent_data, con
       if (ret == ESP_OK) {
         ESP_LOGI(TAG, "✅ Timer %d started successfully", timer_id);
 
-        // Play confirmation beep (2 quick beeps = success)
-        beep_tone_play(1200, 100, 90); // 1.2kHz, 100ms, 90% volume
-        vTaskDelay(pdMS_TO_TICKS(120));
-        beep_tone_play(1200, 100, 90);
+        audio_post_cmd(AUDIO_CMD_TIMER_CONFIRM_BEEP);
 
         // Update MQTT sensor
         if (mqtt_ha_is_connected()) {
@@ -1008,8 +1333,7 @@ static void intent_handler(const char *intent_name, const char *intent_data, con
       } else {
         ESP_LOGE(TAG, "❌ Failed to start timer (error: %d)", ret);
 
-        // Play error beep (low tone)
-        beep_tone_play(400, 300, 60);
+        audio_post_cmd(AUDIO_CMD_TIMER_ERROR_BEEP);
       }
     } else {
       ESP_LOGW(TAG, "Could not parse timer duration");
@@ -1049,7 +1373,7 @@ static void vad_event_handler(audio_capture_vad_event_t event) {
     led_status_set(LED_STATUS_PROCESSING);
 
     pipeline_active = false;
-    audio_capture_stop();
+    (void)audio_capture_stop_wait(0);
     ESP_LOGI(TAG, "Audio capture stopped - I2S freed for TTS");
 
     ha_client_end_audio_stream();
@@ -1071,6 +1395,12 @@ static void audio_capture_handler(const uint8_t *audio_data, size_t length) {
     return;
   }
 
+  // The HA pipeline provides `stt_binary_handler_id` asynchronously (run-start).
+  // Until then, ignore capture chunks without consuming warmup budget or tearing down the pipeline.
+  if (!ha_client_is_audio_ready()) {
+    return;
+  }
+
   if (audio_data == NULL || length == 0) {
     return;
   }
@@ -1085,7 +1415,12 @@ static void audio_capture_handler(const uint8_t *audio_data, size_t length) {
   if (ret == ESP_OK) {
     audio_chunks_sent++;
   } else {
-    ESP_LOGW(TAG, "Failed to stream audio chunk - pipeline may be closed");
+    if (ret == ESP_ERR_INVALID_STATE) {
+      // Race: handler id may have been cleared/reset while capture was running.
+      return;
+    }
+    ESP_LOGW(TAG, "Failed to stream audio chunk - stopping pipeline");
+    pipeline_error_handler("stream_send_failed", "Failed to stream audio chunk");
   }
 }
 
@@ -1115,6 +1450,7 @@ static void test_audio_streaming(void) {
   pipeline_handler = ha_client_start_conversation();
   if (pipeline_handler == NULL) {
     ESP_LOGE(TAG, "Failed to start pipeline");
+    audio_capture_disable_vad();
     return;
   }
 
@@ -1132,6 +1468,9 @@ static void test_audio_streaming(void) {
     ESP_LOGE(TAG, "Failed to start audio capture");
     free(pipeline_handler);
     pipeline_handler = NULL;
+    pipeline_active = false;
+    audio_chunks_sent = 0;
+    audio_capture_disable_vad();
   }
 }
 
@@ -1197,24 +1536,28 @@ void app_main(void) {
     ESP_LOGI(TAG, "Audio capture initialized successfully");
   }
 
+  if (audio_cmd_queue == NULL) {
+    audio_cmd_queue = xQueueCreate(8, sizeof(audio_cmd_t));
+  }
+  if (audio_cmd_queue != NULL && audio_cmd_task_handle == NULL) {
+    BaseType_t task_ret =
+        xTaskCreate(audio_cmd_task, "audio_cmd", 4096, NULL, 6,
+                    &audio_cmd_task_handle);
+    if (task_ret != pdPASS) {
+      ESP_LOGW(TAG, "Failed to create audio command task");
+      audio_cmd_task_handle = NULL;
+    } else {
+      ESP_LOGI(TAG, "Audio command task started");
+    }
+  }
+
   ESP_LOGI(TAG,
            "WakeNet models will be loaded from flash (managed_components)");
 
   ESP_LOGI(TAG, "Initializing Wake Word Detection...");
-  wwd_config_t wwd_config = wwd_get_default_config();
-  wwd_config.callback = on_wake_word_detected;
-  wwd_config.user_data = NULL;
-  wwd_config.detection_threshold = wwd_threshold;
   ESP_LOGI(TAG, "WWD threshold: %.2f, VAD threshold: %lu", wwd_threshold,
            vad_threshold);
-  esp_err_t wwd_ret = wwd_init(&wwd_config);
-
-  if (wwd_ret != ESP_OK) {
-    ESP_LOGE(TAG, "Wake Word Detection initialization failed!");
-    ESP_LOGW(TAG, "Falling back to VAD-based activation");
-  } else {
-    ESP_LOGI(TAG, "Wake Word Detection initialized successfully!");
-  }
+  (void)init_wake_word_detection_if_needed();
 
   ESP_LOGI(TAG, "Initializing Network Manager...");
   // Set LED to purple pulsing - connecting to network
@@ -1460,7 +1803,7 @@ void app_main(void) {
       ESP_LOGI(TAG, "All systems initialized - marking OTA partition as valid");
       ota_update_mark_valid();
 
-      if (wwd_ret == ESP_OK && wwd_is_running() == false) {
+      if (wwd_init_result == ESP_OK && wwd_is_running() == false) {
         ESP_LOGI(TAG, "========================================");
         ESP_LOGI(TAG, "🎙️  Voice Assistant Ready!");
         ESP_LOGI(TAG, "Wake Word Detection enabled");
@@ -1468,8 +1811,7 @@ void app_main(void) {
         ESP_LOGI(TAG, "Wake word: 'Hi ESP' (or your chosen model)");
         ESP_LOGI(TAG, "========================================");
 
-        wwd_start();
-        audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
+        audio_post_cmd(AUDIO_CMD_RESUME_WWD);
 
         // LED to green - wake word ready
         led_status_set(LED_STATUS_IDLE);

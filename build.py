@@ -28,7 +28,11 @@ def main():
     print(f"Working directory: {project_dir}")
 
     # Build command (run in cmd.exe with IDF export)
-    build_cmd = f'cmd.exe /c "call \"{idf_export}\" && idf.py build"'
+    # Force UTF-8 output to avoid UnicodeEncodeError on Windows consoles.
+    build_cmd = (
+        f'cmd.exe /c "chcp 65001>nul && set PYTHONIOENCODING=utf-8 && '
+        f'call \"{idf_export}\" && idf.py build"'
+    )
 
     print("\nStarting build process...")
     print("This may take a few minutes on first build...\n")

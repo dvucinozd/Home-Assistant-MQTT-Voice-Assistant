@@ -2520,12 +2520,6 @@ CONFIG_WIFI_PROV_STA_ALL_CHANNEL_SCAN=y
 # end of Wi-Fi Provisioning Manager
 
 #
-# Board Support Package
-#
-CONFIG_BSP_I2S_NUM=1
-# end of Board Support Package
-
-#
 # Board Support Package(ESP32-P4)
 #
 CONFIG_BSP_ERROR_CHECK=y
@@ -2541,6 +2535,7 @@ CONFIG_BSP_I2C_CLK_SPEED_HZ=400000
 #
 # I2S
 #
+CONFIG_BSP_I2S_NUM=1
 # end of I2S
 
 #

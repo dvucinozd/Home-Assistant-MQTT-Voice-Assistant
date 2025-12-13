@@ -89,7 +89,7 @@ esp_err_t wwd_stop(void);
  * This should be called from audio capture task.
  *
  * @param audio_data PCM audio samples
- * @param length Number of bytes
+ * @param length Number of samples (int16_t)
  * @return ESP_OK on success, error code otherwise
  */
 esp_err_t wwd_feed_audio(const int16_t *audio_data, size_t length);

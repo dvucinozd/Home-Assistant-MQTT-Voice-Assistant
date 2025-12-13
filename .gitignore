@@ -22,6 +22,11 @@ Thumbs.db
 # Logs
 *.log
 
+# Local caches
+.cache/
+__pycache__/
+*.pyc
+
 # ESP-IDF
 sdkconfig.old
 sdkconfig.backup

@@ -102,14 +102,14 @@ LED Status Colors:
 ### 1. Build Project
 
 ```cmd
-cd D:\AI\ESP32P4\JC-ESP32P4-M3-DEV-Voice-Assistant_NEW
+cd D:\AI\ESP32P4\esp32-p4-voice-assistant
 build.bat
 ```
 
 Or manually:
 ```cmd
 C:\Espressif\frameworks\esp-idf-v5.5\export.bat
-cd D:\AI\ESP32P4\JC-ESP32P4-M3-DEV-Voice-Assistant_NEW
+cd D:\AI\ESP32P4\esp32-p4-voice-assistant
 idf.py build
 ```
 
@@ -136,6 +136,23 @@ idf.py -p COM3 monitor
 
 Exit monitor: `Ctrl+]`
 
+## 🌐 Web Dashboard + WebSerial
+
+Web UI se pokreće kada uključiš `webserial_enabled` (MQTT switch). Nakon toga:
+
+- **Dashboard:** `http://<device-ip>/`
+- **WebSerial konzola:** `http://<device-ip>/webserial`
+
+Dashboard prikazuje status (IP/uptime/heap/SD/HA/MQTT/WWD/AGC) i omogućava osnovno podešavanje:
+- WWD threshold
+- VAD threshold/silence/min/max
+- AGC enable + target level
+
+API endpointi (za integracije/skripte):
+- `GET /api/status`
+- `POST /api/config`
+- `POST /api/action`
+
 ## 🛰 MQTT Home Assistant Integration
 
 Device appears as "ESP32-P4 Voice Assistant" in Home Assistant with full auto-discovery.
@@ -145,9 +162,11 @@ Device appears as "ESP32-P4 Voice Assistant" in Home Assistant with full auto-di
 - `free_memory` - Available heap memory
 - `uptime` - System uptime
 - `agc_current_gain` - Current AGC gain level
+- `webserial_clients` - Active WebSerial clients
 
 **Switches:**
 - `wwd_enabled` - Wake Word Detection on/off
+- `webserial_enabled` - Web dashboard + WebSerial on/off
 - `agc_enabled` - Auto Gain Control on/off
 - `led_enabled` - RGB LED status indicator on/off
 
@@ -535,7 +554,7 @@ MIT License - Open source za educational i development svrhe.
 ---
 
 **Status:** ✅ **FULLY FUNCTIONAL** - Complete voice assistant with timers, music player, OTA, and LED feedback
-**Last Updated:** 2025-12-12
+**Last Updated:** 2025-12-13
 
 ---
 

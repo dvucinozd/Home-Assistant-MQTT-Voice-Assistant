@@ -258,9 +258,13 @@ static int set_fs(i2s_data_t *i2s_data, bool playback, bool skip)
     if (skip == false && playback == false && i2s_data->out_handle != NULL && i2s_data->out_enable == false) {
         // TX is master, set to RX not take effect need reconfig TX also
         channel = (i2s_chan_handle_t) i2s_data->out_handle;
-        _i2s_drv_enable(i2s_data, true, false);
+        if (i2s_data->out_enable) {
+            _i2s_drv_enable(i2s_data, true, false);
+        }
         ret = set_drv_fs(channel, true, bits_per_sample, fs);
-        _i2s_drv_enable(i2s_data, true, true);
+        if (i2s_data->out_enable) {
+            _i2s_drv_enable(i2s_data, true, true);
+        }
     }
     return ret;
 }
@@ -358,45 +362,97 @@ static int _i2s_data_enable(const audio_codec_data_if_t *h, esp_codec_dev_type_t
     if (i2s_data->is_open == false) {
         return ESP_CODEC_DEV_WRONG_STATE;
     }
-    int ret = ESP_CODEC_DEV_OK;
+
+    // Avoid redundant enable/disable calls: i2s_channel_disable() logs an error if the
+    // channel is already disabled. Track state and only toggle when needed.
     if (dev_type == ESP_CODEC_DEV_TYPE_IN_OUT) {
-        ret = _i2s_drv_enable(i2s_data, true, enable);
-        ret = _i2s_drv_enable(i2s_data, false, enable);
-    } else {
-        bool playback = dev_type & ESP_CODEC_DEV_TYPE_OUT ? true : false;
-        // When RX is working TX disable should be blocked
-        if (enable == false && i2s_data->in_enable && playback && i2s_data->out_handle) {
-            ESP_LOGI(TAG, "Pending out channel for in channel running");
-            i2s_data->out_disable_pending = true;
+        int out_ret = ESP_CODEC_DEV_OK;
+        int in_ret = ESP_CODEC_DEV_OK;
+
+        if (enable) {
+            if (!i2s_data->out_enable) {
+                out_ret = _i2s_drv_enable(i2s_data, true, true);
+            }
+            if (!i2s_data->in_enable) {
+                in_ret = _i2s_drv_enable(i2s_data, false, true);
+            }
+        } else {
+            if (i2s_data->out_enable) {
+                out_ret = _i2s_drv_enable(i2s_data, true, false);
+            }
+            if (i2s_data->in_enable) {
+                in_ret = _i2s_drv_enable(i2s_data, false, false);
+            }
         }
-    #if SOC_I2S_HW_VERSION_1
-        // For ESP32 and ESP32S3 if disable RX, TX also not work need pending until TX not used
-        else if (enable == false && i2s_data->out_enable && playback == false && i2s_data->in_handle) {
-            ESP_LOGI(TAG, "Pending in channel for out channel running");
-            i2s_data->in_disable_pending = true;
+
+        if (out_ret == ESP_CODEC_DEV_OK) {
+            i2s_data->out_enable = enable;
         }
-    #endif
-        else {
-            ret = _i2s_drv_enable(i2s_data, playback, enable);
-            // Disable TX when RX disable if TX disable is pending
-            if (enable == false) {
-                if (playback == false && i2s_data->out_disable_pending)  {
-                    ret = _i2s_drv_enable(i2s_data, true, enable);
-                    i2s_data->out_disable_pending = false;
-                }
-                if (playback == true && i2s_data->in_disable_pending)  {
-                    ret = _i2s_drv_enable(i2s_data, false, enable);
-                    i2s_data->in_disable_pending = false;
-                }
+        if (in_ret == ESP_CODEC_DEV_OK) {
+            i2s_data->in_enable = enable;
+        }
+
+        return (out_ret != ESP_CODEC_DEV_OK) ? out_ret : in_ret;
+    }
+
+    const bool playback = (dev_type & ESP_CODEC_DEV_TYPE_OUT) ? true : false;
+    const bool currently_enabled = playback ? i2s_data->out_enable : i2s_data->in_enable;
+    int ret = ESP_CODEC_DEV_OK;
+
+    // No-op if already in the requested state (unless we need to flush a pending disable).
+    if (enable == currently_enabled) {
+        if (!(enable == false && ((playback == false && i2s_data->out_disable_pending) ||
+                                  (playback == true && i2s_data->in_disable_pending)))) {
+            return ESP_CODEC_DEV_OK;
+        }
+    }
+
+    // When RX is working TX disable should be blocked
+    if (enable == false && i2s_data->in_enable && playback && i2s_data->out_handle) {
+        ESP_LOGI(TAG, "Pending out channel for in channel running");
+        i2s_data->out_disable_pending = true;
+        return ESP_CODEC_DEV_OK;
+    }
+#if SOC_I2S_HW_VERSION_1
+    // For ESP32 and ESP32S3 if disable RX, TX also not work need pending until TX not used
+    if (enable == false && i2s_data->out_enable && playback == false && i2s_data->in_handle) {
+        ESP_LOGI(TAG, "Pending in channel for out channel running");
+        i2s_data->in_disable_pending = true;
+        return ESP_CODEC_DEV_OK;
+    }
+#endif
+
+    ret = _i2s_drv_enable(i2s_data, playback, enable);
+    if (ret == ESP_CODEC_DEV_OK) {
+        if (playback) {
+            i2s_data->out_enable = enable;
+        } else {
+            i2s_data->in_enable = enable;
+        }
+    }
+
+    // Disable TX when RX disable if TX disable is pending
+    if (enable == false) {
+        if (playback == false && i2s_data->out_disable_pending)  {
+            int out_ret = _i2s_drv_enable(i2s_data, true, false);
+            if (out_ret == ESP_CODEC_DEV_OK) {
+                i2s_data->out_enable = false;
+                i2s_data->out_disable_pending = false;
+            } else if (ret == ESP_CODEC_DEV_OK) {
+                ret = out_ret;
+            }
+        }
+        if (playback == true && i2s_data->in_disable_pending)  {
+            int in_ret = _i2s_drv_enable(i2s_data, false, false);
+            if (in_ret == ESP_CODEC_DEV_OK) {
+                i2s_data->in_enable = false;
+                i2s_data->in_disable_pending = false;
+            } else if (ret == ESP_CODEC_DEV_OK) {
+                ret = in_ret;
             }
         }
     }
-    if (dev_type & ESP_CODEC_DEV_TYPE_IN) {
-        i2s_data->in_enable = enable;
-    }
-    if (dev_type & ESP_CODEC_DEV_TYPE_OUT) {
-        i2s_data->out_enable = enable;
-    }
+
     return ret;
 }
 
@@ -433,10 +489,20 @@ static int _i2s_data_set_fmt(const audio_codec_data_if_t *h, esp_codec_dev_type_
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     // disable internally
     if (dev_type & ESP_CODEC_DEV_TYPE_OUT) {
-        _i2s_drv_enable(i2s_data, true, false);
+        if (i2s_data->out_enable) {
+            if (_i2s_drv_enable(i2s_data, true, false) == ESP_CODEC_DEV_OK) {
+                i2s_data->out_enable = false;
+            }
+        }
+        i2s_data->out_disable_pending = false;
     }
     if (dev_type & ESP_CODEC_DEV_TYPE_IN) {
-        _i2s_drv_enable(i2s_data, false, false);
+        if (i2s_data->in_enable) {
+            if (_i2s_drv_enable(i2s_data, false, false) == ESP_CODEC_DEV_OK) {
+                i2s_data->in_enable = false;
+            }
+        }
+        i2s_data->in_disable_pending = false;
     }
     int ret;
     if ((dev_type & ESP_CODEC_DEV_TYPE_IN) != 0 &&

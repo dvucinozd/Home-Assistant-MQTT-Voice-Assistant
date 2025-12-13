@@ -33,11 +33,12 @@ static struct {
 
 // Forward declarations
 static void timer_manager_task(void *pvParameters);
-static void check_and_trigger_timers(void);
-static void check_and_trigger_alarms(void);
+static void check_and_trigger_timers(tm_timer_t finished[MAX_TIMERS], uint8_t *finished_count);
+static void check_and_trigger_alarms(alarm_t triggered[MAX_ALARMS], uint8_t *triggered_count);
 static void save_alarms_to_nvs(void);
 static void load_alarms_from_nvs(void);
 static void time_sync_notification_cb(struct timeval *tv);
+static uint8_t alarm_today_bit(int tm_wday);
 
 // ============================================================================
 // Initialization / Deinitialization
@@ -151,16 +152,40 @@ static void timer_manager_task(void *pvParameters)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000)); // Tick every 1 second
 
+        tm_timer_t finished_timers[MAX_TIMERS];
+        alarm_t triggered_alarms[MAX_ALARMS];
+        uint8_t finished_count = 0;
+        uint8_t triggered_count = 0;
+
         if (xSemaphoreTake(tm_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            check_and_trigger_timers();
-            check_and_trigger_alarms();
+            check_and_trigger_timers(finished_timers, &finished_count);
+            check_and_trigger_alarms(triggered_alarms, &triggered_count);
             xSemaphoreGive(tm_state.mutex);
+        }
+
+        // Call callbacks outside the mutex to avoid blocking other API calls.
+        for (uint8_t i = 0; i < finished_count; i++) {
+            if (tm_state.config.timer_finished_callback) {
+                tm_state.config.timer_finished_callback(finished_timers[i].id,
+                                                        finished_timers[i].name);
+            }
+        }
+
+        for (uint8_t i = 0; i < triggered_count; i++) {
+            if (tm_state.config.alarm_triggered_callback) {
+                tm_state.config.alarm_triggered_callback(triggered_alarms[i].id,
+                                                         triggered_alarms[i].label);
+            }
         }
     }
 }
 
-static void check_and_trigger_timers(void)
+static void check_and_trigger_timers(tm_timer_t finished[MAX_TIMERS], uint8_t *finished_count)
 {
+    if (finished_count) {
+        *finished_count = 0;
+    }
+
     for (int i = 0; i < MAX_TIMERS; i++) {
         tm_timer_t *timer = &tm_state.timers[i];
 
@@ -179,17 +204,22 @@ static void check_and_trigger_timers(void)
                 ESP_LOGI(TAG, "⏰ Timer %d '%s' finished!", i, timer->name);
                 timer->state = TIMER_STATE_FINISHED;
 
-                // Call callback
-                if (tm_state.config.timer_finished_callback) {
-                    tm_state.config.timer_finished_callback(timer->id, timer->name);
+                // Queue callback for after mutex release
+                if (finished && finished_count && *finished_count < MAX_TIMERS) {
+                    memcpy(&finished[*finished_count], timer, sizeof(tm_timer_t));
+                    (*finished_count)++;
                 }
             }
         }
     }
 }
 
-static void check_and_trigger_alarms(void)
+static void check_and_trigger_alarms(alarm_t triggered[MAX_ALARMS], uint8_t *triggered_count)
 {
+    if (triggered_count) {
+        *triggered_count = 0;
+    }
+
     if (!tm_state.time_synced) {
         return; // Can't check alarms without time sync
     }
@@ -214,8 +244,9 @@ static void check_and_trigger_alarms(void)
                          i, alarm->label);
                 alarm->snooze_active = false;
 
-                if (tm_state.config.alarm_triggered_callback) {
-                    tm_state.config.alarm_triggered_callback(alarm->id, alarm->label);
+                if (triggered && triggered_count && *triggered_count < MAX_ALARMS) {
+                    memcpy(&triggered[*triggered_count], alarm, sizeof(alarm_t));
+                    (*triggered_count)++;
                 }
             }
             continue;
@@ -226,7 +257,7 @@ static void check_and_trigger_alarms(void)
             timeinfo.tm_sec == 0) { // Only trigger once per minute
 
             // Check if alarm should repeat today
-            uint8_t today_bit = 1 << timeinfo.tm_wday;
+            uint8_t today_bit = alarm_today_bit(timeinfo.tm_wday);
 
             if (alarm->repeat_days == ALARM_REPEAT_ONCE ||
                 (alarm->repeat_days & today_bit)) {
@@ -234,9 +265,10 @@ static void check_and_trigger_alarms(void)
                 ESP_LOGI(TAG, "⏰ Alarm %d '%s' triggered! (%02d:%02d)",
                          i, alarm->label, alarm->hour, alarm->minute);
 
-                // Trigger callback
-                if (tm_state.config.alarm_triggered_callback) {
-                    tm_state.config.alarm_triggered_callback(alarm->id, alarm->label);
+                // Queue callback for after mutex release
+                if (triggered && triggered_count && *triggered_count < MAX_ALARMS) {
+                    memcpy(&triggered[*triggered_count], alarm, sizeof(alarm_t));
+                    (*triggered_count)++;
                 }
 
                 // Disable one-time alarms
@@ -248,6 +280,19 @@ static void check_and_trigger_alarms(void)
             }
         }
     }
+}
+
+// Map libc tm_wday (0=Sunday..6=Saturday) to alarm_repeat_pattern_t bits
+// (bit0=Monday..bit6=Sunday).
+static uint8_t alarm_today_bit(int tm_wday)
+{
+    if (tm_wday <= 0) {
+        return ALARM_REPEAT_SUNDAY;
+    }
+    if (tm_wday >= 6) {
+        return ALARM_REPEAT_SATURDAY;
+    }
+    return (uint8_t)(1U << (tm_wday - 1));
 }
 
 // ============================================================================
@@ -773,6 +818,7 @@ esp_err_t timer_manager_init_sntp(const char *timezone)
         setenv("TZ", timezone, 1);
         tzset();
         strncpy(tm_state.timezone, timezone, sizeof(tm_state.timezone) - 1);
+        tm_state.timezone[sizeof(tm_state.timezone) - 1] = '\0';
         ESP_LOGI(TAG, "Timezone set to: %s", timezone);
     }
 

@@ -19,6 +19,7 @@
 
 #include "config.h"
 #include "connection_manager.h"
+#include "audio_capture.h"
 #include "ha_client.h"
 
 
@@ -52,11 +53,12 @@ static EventGroupHandle_t ha_event_group;
 #define HA_CONNECTED_BIT BIT0
 #define HA_AUTHENTICATED_BIT BIT1
 
+// Avoid blocking event loop / audio capture tasks indefinitely on socket writes.
+#define HA_SEND_TEXT_TIMEOUT_MS 2000
+#define HA_SEND_AUDIO_TIMEOUT_MS 100
+
 // Forward declarations
 static void download_tts_audio(const char *url);
-
-// External function to stop audio capture (defined in audio_capture.c)
-extern void audio_capture_stop(void);
 
 /**
  * Resolve mDNS hostname to IP address
@@ -102,9 +104,13 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     char auth_msg[512];
     snprintf(auth_msg, sizeof(auth_msg),
              "{\"type\":\"auth\",\"access_token\":\"%s\"}", HA_TOKEN);
-    esp_websocket_client_send_text(ws_client, auth_msg, strlen(auth_msg),
-                                   portMAX_DELAY);
-    ESP_LOGI(TAG, "Sent authentication token");
+    int auth_ret = esp_websocket_client_send_text(
+        ws_client, auth_msg, strlen(auth_msg), pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
+    if (auth_ret < 0) {
+      ESP_LOGE(TAG, "Failed to send authentication token");
+    } else {
+      ESP_LOGI(TAG, "Sent authentication token");
+    }
     break;
 
   case WEBSOCKET_EVENT_DISCONNECTED:
@@ -125,9 +131,21 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
       break;
     }
 
+    // Ignore control frames / keepalives (prevents log spam with empty payloads).
+    if (data->op_code == 0x09 || data->op_code == 0x0A) {
+      ESP_LOGD(TAG, "Received WS control frame opcode=0x%02x len=%d",
+               (unsigned)data->op_code, (int)data->data_len);
+      break;
+    }
+
+    if (data->data_len <= 0 || data->data_ptr == NULL) {
+      ESP_LOGD(TAG, "Ignoring empty WebSocket frame (opcode=0x%02x)",
+               (unsigned)data->op_code);
+      break;
+    }
+
     // Text frame - parse JSON
-    ESP_LOGI(TAG, "WebSocket received data: %.*s", data->data_len,
-             (char *)data->data_ptr);
+    ESP_LOGD(TAG, "WebSocket received %d bytes", (int)data->data_len);
 
     // Parse JSON response
     if (data->data_len > 0) {
@@ -393,9 +411,9 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
 
               ESP_LOGE(TAG, "Pipeline error: %s - %s", error_code, error_msg);
 
-              // Stop audio capture on pipeline error
-              audio_capture_stop();
-              ESP_LOGI(TAG, "Audio capture stopped due to pipeline error");
+               // Stop audio capture on pipeline error
+               (void)audio_capture_stop_wait(500);
+               ESP_LOGI(TAG, "Audio capture stopped due to pipeline error");
 
               // Reset handler ID
               stt_binary_handler_id = -1;
@@ -563,7 +581,14 @@ static esp_err_t init_mdns(void) {
 esp_err_t ha_client_init(void) {
   ESP_LOGI(TAG, "Initializing Home Assistant client...");
 
+  // Clean up any previous instance (connection_manager may call init multiple times).
+  ha_client_stop();
+
   ha_event_group = xEventGroupCreate();
+  if (ha_event_group == NULL) {
+    ESP_LOGE(TAG, "Failed to create HA event group");
+    return ESP_ERR_NO_MEM;
+  }
 
   // Initialize mDNS
   esp_err_t err = init_mdns();
@@ -625,6 +650,7 @@ esp_err_t ha_client_init(void) {
   err = esp_websocket_client_start(ws_client);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "WebSocket client start failed: %s", esp_err_to_name(err));
+    ha_client_stop();
     return err;
   }
 
@@ -640,11 +666,16 @@ esp_err_t ha_client_init(void) {
     return ESP_OK;
   } else {
     ESP_LOGE(TAG, "Authentication timeout");
+    ha_client_stop();
     return ESP_ERR_TIMEOUT;
   }
 }
 
 bool ha_client_is_connected(void) { return ws_connected && ws_authenticated; }
+
+bool ha_client_is_audio_ready(void) {
+  return ha_client_is_connected() && stt_binary_handler_id >= 0;
+}
 
 esp_err_t ha_client_send_text(const char *text) {
   if (!ha_client_is_connected()) {
@@ -666,7 +697,8 @@ esp_err_t ha_client_send_text(const char *text) {
 
   ESP_LOGI(TAG, "Sending to HA: %s", json_str);
   int ret = esp_websocket_client_send_text(ws_client, json_str,
-                                           strlen(json_str), portMAX_DELAY);
+                                           strlen(json_str),
+                                           pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
 
   free(json_str);
   cJSON_Delete(root);
@@ -679,6 +711,9 @@ char *ha_client_start_conversation(void) {
     ESP_LOGW(TAG, "Cannot start conversation - not connected");
     return NULL;
   }
+
+  // Ensure we don't accidentally reuse a stale handler id from a previous run.
+  stt_binary_handler_id = -1;
 
   // Start Assist Pipeline with audio input
   cJSON *root = cJSON_CreateObject();
@@ -704,7 +739,8 @@ char *ha_client_start_conversation(void) {
 
   ESP_LOGI(TAG, "Starting Assist Pipeline: %s", json_str);
   int ret = esp_websocket_client_send_text(ws_client, json_str,
-                                           strlen(json_str), portMAX_DELAY);
+                                           strlen(json_str),
+                                           pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
 
   free(json_str);
   cJSON_Delete(root);
@@ -753,7 +789,8 @@ esp_err_t ha_client_stream_audio(const uint8_t *audio_data, size_t length,
   memcpy(frame + 1, audio_data, length);
 
   int ret = esp_websocket_client_send_bin(ws_client, (const char *)frame,
-                                          1 + length, portMAX_DELAY);
+                                          1 + length,
+                                          pdMS_TO_TICKS(HA_SEND_AUDIO_TIMEOUT_MS));
   free(frame);
 
   if (ret < 0) {
@@ -780,7 +817,7 @@ esp_err_t ha_client_end_audio_stream(void) {
   // Send binary frame with just handler ID (no audio data) to signal end
   uint8_t end_frame[1] = {(uint8_t)stt_binary_handler_id};
   int ret = esp_websocket_client_send_bin(ws_client, (const char *)end_frame, 1,
-                                          portMAX_DELAY);
+                                          pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
 
   if (ret < 0) {
     ESP_LOGE(TAG, "Failed to send end-of-audio signal");
@@ -849,7 +886,8 @@ esp_err_t ha_client_request_tts(const char *text) {
 
   ESP_LOGI(TAG, "Requesting TTS: %s", json_str);
   int ret = esp_websocket_client_send_text(ws_client, json_str,
-                                           strlen(json_str), portMAX_DELAY);
+                                           strlen(json_str),
+                                           pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
 
   free(json_str);
   cJSON_Delete(root);
@@ -862,6 +900,11 @@ void ha_client_stop(void) {
     esp_websocket_client_stop(ws_client);
     esp_websocket_client_destroy(ws_client);
     ws_client = NULL;
+  }
+
+  if (ha_event_group) {
+    vEventGroupDelete(ha_event_group);
+    ha_event_group = NULL;
   }
 
   mdns_free();

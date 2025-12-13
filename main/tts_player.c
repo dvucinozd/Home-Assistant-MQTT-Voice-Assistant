@@ -4,6 +4,7 @@
 
 #include "tts_player.h"
 #include "audio_player.h"
+#include "audio_capture.h"
 #include "bsp_board_extra.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -38,14 +39,34 @@ static size_t tts_buffer_pos = 0;
 // Playback completion callback
 static tts_playback_complete_callback_t playback_complete_callback = NULL;
 
+static void tts_queue_stop_signal(void)
+{
+    if (audio_queue == NULL) {
+        return;
+    }
+
+    audio_chunk_t stop_chunk = {.data = NULL, .length = 0};
+    if (xQueueSend(audio_queue, &stop_chunk, pdMS_TO_TICKS(500)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to queue stop signal (queue full)");
+        // Ensure assistant doesn't get stuck waiting for completion.
+        if (playback_complete_callback) {
+            playback_complete_callback();
+        }
+    }
+}
+
 /**
  * Decode and play MP3 audio buffer
  */
 static esp_err_t play_mp3_buffer(uint8_t *mp3_data, size_t mp3_size)
 {
+    esp_err_t overall_ret = ESP_OK;
+    int16_t *pcm_buffer = NULL;
+
     if (mp3_decoder == NULL) {
         ESP_LOGE(TAG, "MP3 decoder not initialized");
-        return ESP_ERR_INVALID_STATE;
+        overall_ret = ESP_ERR_INVALID_STATE;
+        goto out;
     }
 
     ESP_LOGI(TAG, "Decoding MP3: %d bytes", mp3_size);
@@ -61,10 +82,11 @@ static esp_err_t play_mp3_buffer(uint8_t *mp3_data, size_t mp3_size)
     codec_configured_flag = false;
 
     // PCM output buffer
-    int16_t *pcm_buffer = (int16_t *)malloc(PCM_BUFFER_SIZE);
+    pcm_buffer = (int16_t *)malloc(PCM_BUFFER_SIZE);
     if (pcm_buffer == NULL) {
         ESP_LOGE(TAG, "Failed to allocate PCM buffer");
-        return ESP_ERR_NO_MEM;
+        overall_ret = ESP_ERR_NO_MEM;
+        goto out;
     }
 
     uint8_t *read_ptr = mp3_data;
@@ -115,8 +137,8 @@ static esp_err_t play_mp3_buffer(uint8_t *mp3_data, size_t mp3_size)
 
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
-                free(pcm_buffer);
-                return ret;
+                overall_ret = ret;
+                goto out;
             }
 
             total_samples += frame_info.outputSamps;
@@ -134,16 +156,19 @@ static esp_err_t play_mp3_buffer(uint8_t *mp3_data, size_t mp3_size)
         }
     }
 
-    free(pcm_buffer);
-
     ESP_LOGI(TAG, "Playback complete: %d samples", total_samples);
 
-    // Call completion callback if registered
+out:
+    if (pcm_buffer) {
+        free(pcm_buffer);
+    }
+
+    // Always signal completion so the assistant can resume listening even on errors
     if (playback_complete_callback) {
         playback_complete_callback();
     }
 
-    return ESP_OK;
+    return overall_ret;
 }
 
 /**
@@ -166,8 +191,7 @@ static void playback_task(void *arg)
                     ESP_LOGI(TAG, "Playing TTS audio: %d bytes MP3", tts_buffer_pos);
 
                     // Stop audio capture to free I2S channel for playback
-                    extern void audio_capture_stop(void);
-                    audio_capture_stop();
+                    (void)audio_capture_stop_wait(1000);
                     ESP_LOGI(TAG, "Audio capture stopped - I2S freed for TTS playback");
 
                     // Small delay to ensure I2S is fully released
@@ -180,6 +204,11 @@ static void playback_task(void *arg)
                     }
 
                     tts_buffer_pos = 0;
+                } else {
+                    // No audio received (download failed / empty stream) - still unblock resume path
+                    if (playback_complete_callback) {
+                        playback_complete_callback();
+                    }
                 }
                 continue;
             }
@@ -252,8 +281,7 @@ esp_err_t tts_player_feed(const uint8_t *audio_data, size_t length)
 
     if (audio_data == NULL || length == 0) {
         // Empty chunk = end of audio stream
-        audio_chunk_t stop_chunk = {.data = NULL, .length = 0};
-        xQueueSend(audio_queue, &stop_chunk, 0);
+        tts_queue_stop_signal();
         return ESP_OK;
     }
 
@@ -289,8 +317,7 @@ void tts_player_stop(void)
 {
     if (audio_queue != NULL) {
         // Send stop signal
-        audio_chunk_t stop_chunk = {.data = NULL, .length = 0};
-        xQueueSend(audio_queue, &stop_chunk, 0);
+        tts_queue_stop_signal();
     }
 
     tts_buffer_pos = 0;

@@ -13,6 +13,8 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "driver/i2c.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -25,14 +27,38 @@ static const char *TAG = "bsp_extra_board";
 
 static esp_codec_dev_handle_t play_dev_handle;
 static esp_codec_dev_handle_t record_dev_handle;
+static bool play_dev_open = false;
+static bool record_dev_open = false;
 
 static bool _is_audio_init = false;
 static bool _is_player_init = false;
 static int _vloume_intensity = CODEC_DEFAULT_VOLUME;
 
+static SemaphoreHandle_t audio_bus_mutex = NULL;
+
 static audio_player_cb_t audio_idle_callback = NULL;
 static void *audio_idle_cb_user_data = NULL;
 static char audio_file_path[128];
+
+static SemaphoreHandle_t get_audio_bus_mutex(void) {
+    if (audio_bus_mutex == NULL) {
+        audio_bus_mutex = xSemaphoreCreateMutex();
+    }
+    return audio_bus_mutex;
+}
+
+static void audio_bus_lock(void) {
+    SemaphoreHandle_t mutex = get_audio_bus_mutex();
+    if (mutex) {
+        xSemaphoreTake(mutex, portMAX_DELAY);
+    }
+}
+
+static void audio_bus_unlock(void) {
+    if (audio_bus_mutex) {
+        xSemaphoreGive(audio_bus_mutex);
+    }
+}
 
 /**************************************************************************************************
  *
@@ -89,22 +115,34 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode
         .bits_per_sample = bits_cfg,
     };
 
-    if (play_dev_handle) {
-        // Close may fail if already closed, ignore error
-        esp_codec_dev_close(play_dev_handle);
-    }
+    audio_bus_lock();
     if (record_dev_handle) {
-        // Close may fail if already closed, ignore error
-        esp_codec_dev_close(record_dev_handle);
+        if (record_dev_open) {
+            esp_codec_dev_close(record_dev_handle);
+            record_dev_open = false;
+        }
         ret |= esp_codec_dev_set_in_gain(record_dev_handle, CODEC_DEFAULT_ADC_VOLUME);
     }
-
     if (play_dev_handle) {
-        ret |= esp_codec_dev_open(play_dev_handle, &fs);
+        // Avoid calling close() on an unopened device to prevent noisy I2S driver logs.
+        // Close playback after record to avoid I2S disable pending state churn.
+        if (play_dev_open) {
+            esp_codec_dev_close(play_dev_handle);
+            play_dev_open = false;
+        }
     }
+
     if (record_dev_handle) {
-        ret |= esp_codec_dev_open(record_dev_handle, &fs);
+        esp_err_t open_ret = esp_codec_dev_open(record_dev_handle, &fs);
+        ret |= open_ret;
+        record_dev_open = (open_ret == ESP_OK);
     }
+    if (play_dev_handle) {
+        esp_err_t open_ret = esp_codec_dev_open(play_dev_handle, &fs);
+        ret |= open_ret;
+        play_dev_open = (open_ret == ESP_OK);
+    }
+    audio_bus_unlock();
     return ret;
 }
 
@@ -119,12 +157,18 @@ esp_err_t bsp_extra_codec_open_playback(uint32_t rate, uint32_t bits_cfg, i2s_sl
         .bits_per_sample = bits_cfg,
     };
 
+    audio_bus_lock();
     if (play_dev_handle) {
         // Close first to allow channel/rate reconfiguration
-        esp_codec_dev_close(play_dev_handle);
+        if (play_dev_open) {
+            esp_codec_dev_close(play_dev_handle);
+            play_dev_open = false;
+        }
         ret = esp_codec_dev_open(play_dev_handle, &fs);
+        play_dev_open = (ret == ESP_OK);
         ESP_LOGI(TAG, "Setting codec to %d Hz, %d bits, %d channels", rate, bits_cfg, ch);
     }
+    audio_bus_unlock();
 
     return ret;
 }
@@ -147,7 +191,9 @@ int bsp_extra_codec_volume_get(void)
 esp_err_t bsp_extra_codec_mute_set(bool enable)
 {
     esp_err_t ret = ESP_OK;
+    audio_bus_lock();
     ret = esp_codec_dev_set_out_mute(play_dev_handle, enable);
+    audio_bus_unlock();
     return ret;
 }
 
@@ -155,13 +201,21 @@ esp_err_t bsp_extra_codec_dev_stop(void)
 {
     esp_err_t ret = ESP_OK;
 
-    if (play_dev_handle) {
-        ret = esp_codec_dev_close(play_dev_handle);
+    audio_bus_lock();
+    if (record_dev_handle) {
+        if (record_dev_open) {
+            ret = esp_codec_dev_close(record_dev_handle);
+            record_dev_open = false;
+        }
     }
 
-    if (record_dev_handle) {
-        ret = esp_codec_dev_close(record_dev_handle);
+    if (play_dev_handle) {
+        if (play_dev_open) {
+            ret = esp_codec_dev_close(play_dev_handle);
+            play_dev_open = false;
+        }
     }
+    audio_bus_unlock();
     return ret;
 }
 

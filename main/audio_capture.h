@@ -79,6 +79,17 @@ esp_err_t audio_capture_start(audio_capture_callback_t callback);
 void audio_capture_stop(void);
 
 /**
+ * @brief Stop capturing audio and wait for capture task to exit
+ *
+ * Safe to call from any task except the capture task itself (in that case it
+ * behaves like audio_capture_stop()).
+ *
+ * @param timeout_ms Max time to wait for task exit (0 = no wait)
+ * @return ESP_OK if stopped, ESP_ERR_TIMEOUT if timed out
+ */
+esp_err_t audio_capture_stop_wait(uint32_t timeout_ms);
+
+/**
  * @brief Deinitialize audio capture
  */
 void audio_capture_deinit(void);

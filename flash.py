@@ -32,7 +32,11 @@ def main():
     print(f"Port: {COM_PORT}")
     print(f"Working directory: {project_dir}\n")
 
-    flash_cmd = f'cmd.exe /c "call \"{idf_export}\" && idf.py -p {COM_PORT} flash monitor"'
+    # Force UTF-8 output to avoid UnicodeEncodeError on Windows consoles.
+    flash_cmd = (
+        f'cmd.exe /c "chcp 65001>nul && set PYTHONIOENCODING=utf-8 && '
+        f'call \"{idf_export}\" && idf.py -p {COM_PORT} flash monitor"'
+    )
 
     print("Starting flash process...")
     print("Make sure board is connected!")

@@ -1,204 +1,67 @@
-# WakeNet9 SD Card Setup Guide
+# WakeNet9 Model Setup (Flash by default, SD optional)
 
-This guide explains how to set up WakeNet9 wake word detection models on an SD card for the ESP32-P4 Voice Assistant.
+This project uses **ESP-SR WakeNet9** for wake word detection (default model: `wn9_hiesp` = "Hi ESP").
 
-## Overview
+## Default (recommended): Flash `model` partition
 
-WakeNet9 models are stored on the SD card to save flash space and allow easy model updates without reflashing the device.
+By default, WakeNet models are stored in the **flash** `model` partition (`partitions.csv`) and are flashed alongside the firmware (build produces `build/srmodels/srmodels.bin`).
 
-## Model Structure
+Benefits:
+- Works in **WiFi and Ethernet** modes
+- No SD card required for wake word detection
+- Avoids SDIO pin conflicts
 
-Each WakeNet9 model consists of 3 files in its own directory:
+## Optional: SD card models (Ethernet-only / no ESP32-hosted WiFi)
+
+ESP-SR supports loading models from an SD card via `CONFIG_MODEL_IN_SDCARD`.
+
+Important limitation in this project:
+- When using **ESP32-hosted WiFi (SDIO)**, the SD card interface/pins conflict, so SD card models are **not compatible** with that WiFi mode.
+- SD-based model loading is practical only for **Ethernet mode** (or when hosted WiFi is disabled).
+
+## SD model directory structure
+
+Each WakeNet9 model is a folder with 3 files:
+
 ```
 /sdcard/srmodels/
-├── wn9_hiesp/          (example: "Hi ESP" wake word)
-│   ├── _MODEL_INFO_    (model metadata)
-│   ├── wn9_data        (model weights)
-│   └── wn9_index       (model index)
+  wn9_hiesp/
+    _MODEL_INFO_
+    wn9_data
+    wn9_index
 ```
 
-## Available Models
+## Copying a model to SD
 
-The ESP-SR component includes many pre-trained WakeNet9 models for different wake words:
+Models are located in the repo under:
+`managed_components/espressif__esp-sr/model/wakenet_model/`
 
-### English Wake Words
-- `wn9_alexa` - "Alexa"
-- `wn9_hiesp` - "Hi ESP"  ⭐ **Recommended**
-- `wn9_computer_tts` - "Computer"
-- `wn9_mycroft_tts` - "Mycroft"
-- `wn9_jarvis_tts` - "Jarvis"
+Example (copy "Hi ESP"):
 
-### Chinese Wake Words
-- `wn9_hilexin` - "Hi Lexin"
-- `wn9_nihaoxiaozhi` - "Ni Hao Xiao Zhi"
-- `wn9_xiaoaitongxue` - "Xiao Ai Tong Xue"
-- And many more...
-
-All models are located in: `managed_components/espressif__esp-sr/model/wakenet_model/`
-
-## SD Card Setup Instructions
-
-### Step 1: Prepare SD Card
-1. Format SD card as FAT32
-2. Create directory structure:
-   ```
-   /sdcard/srmodels/
-   ```
-
-### Step 2: Copy Model Files
-Choose a wake word model and copy it to the SD card:
-
-**Example - Using "Hi ESP" wake word:**
-```bash
-# From project directory
-mkdir -p /path/to/sdcard/srmodels/wn9_hiesp
-cp managed_components/espressif__esp-sr/model/wakenet_model/wn9_hiesp/* /path/to/sdcard/srmodels/wn9_hiesp/
-```
-
-**Windows PowerShell:**
+PowerShell (SD card mounted as `E:`):
 ```powershell
-# Assuming SD card is mounted as E:
-New-Item -Path "E:\srmodels\wn9_hiesp" -ItemType Directory -Force
-Copy-Item -Path "managed_components\espressif__esp-sr\model\wakenet_model\wn9_hiesp\*" -Destination "E:\srmodels\wn9_hiesp\"
+New-Item -Path "E:\\srmodels\\wn9_hiesp" -ItemType Directory -Force
+Copy-Item -Path "managed_components\\espressif__esp-sr\\model\\wakenet_model\\wn9_hiesp\\*" -Destination "E:\\srmodels\\wn9_hiesp\\"
 ```
 
-### Step 3: Verify Files
-Ensure the SD card has this structure:
-```
-E:\ (or /sdcard/)
-└── srmodels/
-    └── wn9_hiesp/
-        ├── _MODEL_INFO_
-        ├── wn9_data
-        └── wn9_index
-```
+## Enabling SD model mode in firmware
 
-### Step 4: Insert SD Card
-Insert the SD card into the ESP32-P4 board's SD card slot.
+1) Enable SD-card model loading:
+- `idf.py menuconfig` → `Component config` → `ESP Speech Recognition` → enable `MODEL_IN_SDCARD` (`CONFIG_MODEL_IN_SDCARD`)
 
-## Code Configuration
+2) In SD model mode, `main/wwd.c` loads models from `/sdcard/srmodels` (compile-time).
 
-The wake word detection code in `main/wwd.c` is already configured to load models from `/sdcard/srmodels/`:
-
-```c
-// Loads models from SD card
-srmodel_list_t *models = esp_srmodel_init("/sdcard/srmodels");
-
-// Finds WakeNet9 model
-char *model_name = esp_srmodel_filter(models, "wn9", NULL);
-```
-
-## Enable Wake Word Detection
-
-To enable wake word detection in `main/mp3_player.c`, uncomment the WWD initialization:
-
-```c
-void app_main(void) {
-    // ... other initialization ...
-
-    // Enable Wake Word Detection
-    ESP_LOGI(TAG, "Initializing Wake Word Detection...");
-    wwd_config_t wwd_config = wwd_get_default_config();
-    wwd_config.callback = on_wake_word_detected;
-    wwd_config.user_data = NULL;
-    ret = wwd_init(&wwd_config);
-
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Starting wake word detection...");
-        wwd_start();
-        audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-    } else {
-        ESP_LOGE(TAG, "Failed to initialize wake word detection");
-    }
-
-    // ... rest of init ...
-}
-```
-
-## Testing
-
-1. Flash the firmware to ESP32-P4
-2. Power on the device
-3. Monitor serial output for wake word detection logs:
-   ```
-   I (xxx) wwd: Initializing Wake Word Detection...
-   I (xxx) wwd: Loading models from SD card...
-   I (xxx) wwd: Found WakeNet9 model: wn9_hiesp
-   I (xxx) wwd: Wake Word Detection initialized successfully
-   I (xxx) wwd: Starting wake word detection...
-   ```
-
-4. Say the wake word ("Hi ESP")
-5. You should see:
-   ```
-   I (xxx) wwd: 🎤 Wake word detected!
-   ```
+3) Ensure SD card is mounted **before** WakeNet init:
+- In this project SD mounting is typically tied to **Ethernet connectivity**; in WiFi(SDIO) mode SD is disabled.
 
 ## Troubleshooting
 
-### "Failed to load models from SD card"
-- Verify SD card is properly formatted (FAT32)
-- Check directory structure is correct: `/sdcard/srmodels/wn9_xxx/`
-- Ensure all 3 files are present (_MODEL_INFO_, wn9_data, wn9_index)
-- Try different SD card if mount fails
+### "No models found" / "Failed to load models"
+- Verify SD card is FAT32 and mounted as `/sdcard`
+- Verify structure: `/sdcard/srmodels/wn9_xxx/{_MODEL_INFO_,wn9_data,wn9_index}`
+- Ensure you are not using ESP32-hosted WiFi (SDIO); use Ethernet-only for SD model loading
 
-### "WakeNet9 model not found on SD card"
-- Verify model directory name starts with "wn9_"
-- Check `_MODEL_INFO_` file exists and is readable
-- Ensure files were copied completely (check file sizes)
+## Notes
 
-### Wake word not detected
-- Speak clearly and at normal volume
-- Try adjusting detection threshold in wwd_config (default: 0.5)
-- Check microphone is working (test with VAD-based activation first)
-- Try different wake word model
-
-### Low detection rate
-- Increase threshold: `wwd_config.detection_threshold = 0.7f;`
-- Use DET_MODE_95 (aggressive mode) - automatically set for threshold >= 0.95
-- Reduce background noise
-- Position microphone closer to sound source
-
-## Model Information Format
-
-The `_MODEL_INFO_` file contains model metadata:
-```
-wakeNet9_v1h24_Hi,ESP_3_0.63_0.635
-```
-
-Format: `model_type_version_wakeword_window_threshold1_threshold2`
-
-## Adding Multiple Wake Words
-
-To support multiple wake words simultaneously:
-1. Copy multiple model directories to SD card:
-   ```
-   /sdcard/srmodels/
-   ├── wn9_hiesp/
-   ├── wn9_alexa/
-   └── wn9_computer_tts/
-   ```
-
-2. The system will automatically detect all available models
-3. Any detected wake word will trigger the callback
-
-## Performance Notes
-
-- WakeNet9 requires ~16kHz mono audio input
-- Detection runs in real-time with minimal CPU overhead
-- PSRAM is used for model storage during runtime
-- SD card is only accessed during initialization
-
-## References
-
-- [ESP-SR Documentation](https://github.com/espressif/esp-sr)
-- [ESP-Skainet Examples](https://github.com/espressif/esp-skainet)
-- [WakeNet Wake Word Engine Documentation](https://docs.espressif.com/projects/esp-sr/en/latest/esp32p4/wake_word_engine/README.html)
-- [Model Selection and Loading](https://docs.espressif.com/projects/esp-sr/en/latest/esp32p4/flash_model/README.html)
-
-## Model Locations
-
-All available models can be found at:
-```
-D:\AI\ESP32P4\JC-ESP32P4-M3-DEV-Voice-Assistant_NEW\managed_components\espressif__esp-sr\model\wakenet_model\
-```
+- WakeNet expects 16 kHz mono audio input
+- SD card is only accessed during model discovery/initialization

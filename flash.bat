@@ -18,6 +18,8 @@ if not exist "%IDF_PATH%\export.bat" (
 pushd "%~dp0"
 
 call "%IDF_PATH%\export.bat"
+chcp 65001>nul
+set PYTHONIOENCODING=utf-8
 
 echo.
 echo Flashing to board on %COM_PORT% (USB/JTAG)...

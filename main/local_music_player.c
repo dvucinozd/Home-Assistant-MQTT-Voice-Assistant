@@ -29,6 +29,29 @@ static int total_tracks = 0;
 static music_event_callback_t event_callback = NULL;
 static bool manual_stop = false;  // Flag to prevent auto-play after manual stop
 
+static void free_file_iterator_instance(file_iterator_instance_t **instance)
+{
+    if (instance == NULL || *instance == NULL) {
+        return;
+    }
+
+    file_iterator_instance_t *it = *instance;
+
+    if (it->list) {
+        for (size_t i = 0; i < it->count; i++) {
+            free(it->list[i]);
+        }
+        free(it->list);
+    }
+
+    if (it->directory_path) {
+        free((void *)it->directory_path);
+    }
+
+    free(it);
+    *instance = NULL;
+}
+
 /**
  * @brief Audio player callback from BSP
  */
@@ -128,7 +151,7 @@ esp_err_t local_music_player_init(void)
     if (total_tracks == 0) {
         ESP_LOGW(TAG, "No music files found in %s", MUSIC_DIR);
         bsp_extra_player_del();
-        file_iterator = NULL;
+        free_file_iterator_instance(&file_iterator);
         return ESP_FAIL;
     }
 
@@ -154,7 +177,7 @@ esp_err_t local_music_player_deinit(void)
     ESP_LOGI(TAG, "Deinitializing local music player...");
 
     // Stop playback if active
-    if (player_state == MUSIC_STATE_PLAYING) {
+    if (player_state == MUSIC_STATE_PLAYING || player_state == MUSIC_STATE_PAUSED) {
         local_music_player_stop();
     }
 
@@ -162,24 +185,7 @@ esp_err_t local_music_player_deinit(void)
     bsp_extra_player_del();
 
     // Delete file iterator (manual cleanup since file_iterator_delete doesn't exist)
-    if (file_iterator) {
-        // Free file list
-        if (file_iterator->list) {
-            for (size_t i = 0; i < file_iterator->count; i++) {
-                if (file_iterator->list[i]) {
-                    free(file_iterator->list[i]);
-                }
-            }
-            free(file_iterator->list);
-        }
-        // Free directory path
-        if (file_iterator->directory_path) {
-            free((void*)file_iterator->directory_path);
-        }
-        // Free instance
-        free(file_iterator);
-        file_iterator = NULL;
-    }
+    free_file_iterator_instance(&file_iterator);
     total_tracks = 0;
     current_track_index = -1;
     player_state = MUSIC_STATE_IDLE;

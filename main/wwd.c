@@ -10,9 +10,44 @@
 #include "esp_wn_models.h"
 #include "esp_afe_sr_iface.h"
 #include "model_path.h"
+#include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include "sdkconfig.h"
 
 static const char *TAG = "wwd";
+
+static const char *select_model_name(const srmodel_list_t *models) {
+    if (models == NULL || models->num <= 0 || models->model_name == NULL) {
+        return NULL;
+    }
+
+    // Prefer common "Hi ESP" model if present
+    for (int i = 0; i < models->num; i++) {
+        const char *name = models->model_name[i];
+        if (name && strcmp(name, "wn9_hiesp") == 0) {
+            return name;
+        }
+    }
+
+    // Otherwise prefer any WakeNet9 model
+    for (int i = 0; i < models->num; i++) {
+        const char *name = models->model_name[i];
+        if (name && strncmp(name, "wn9_", 4) == 0) {
+            return name;
+        }
+    }
+
+    // Otherwise any WakeNet model
+    for (int i = 0; i < models->num; i++) {
+        const char *name = models->model_name[i];
+        if (name && strncmp(name, "wn", 2) == 0) {
+            return name;
+        }
+    }
+
+    return models->model_name[0];
+}
 
 // Wake word detection state
 static struct {
@@ -21,11 +56,17 @@ static struct {
     wwd_config_t config;
     esp_wn_iface_t *wakenet;
     model_iface_data_t *model_data;
+    int chunk_size;
+    int16_t *chunk_buffer;
+    size_t chunk_filled;
 } wwd_state = {
     .initialized = false,
     .running = false,
     .wakenet = NULL,
-    .model_data = NULL
+    .model_data = NULL,
+    .chunk_size = 0,
+    .chunk_buffer = NULL,
+    .chunk_filled = 0
 };
 
 wwd_config_t wwd_get_default_config(void)
@@ -60,31 +101,36 @@ esp_err_t wwd_init(const wwd_config_t *config)
     // Copy configuration
     memcpy(&wwd_state.config, config, sizeof(wwd_config_t));
 
-    // Step 1: Initialize models from flash (managed_components)
-    ESP_LOGI(TAG, "Loading models from flash partition...");
-    srmodel_list_t *models = esp_srmodel_init("model");  // Load from "model" partition
-    if (!models) {
-        ESP_LOGE(TAG, "Failed to load models from flash partition");
-        ESP_LOGE(TAG, "Trying to load models from component directory...");
-        // Fallback: Try NULL to load from component directory
-        models = esp_srmodel_init(NULL);
-        if (!models) {
-            ESP_LOGE(TAG, "Failed to load models from component directory");
-            return ESP_FAIL;
-        }
+    // Step 1: Initialize models
+    srmodel_list_t *models = NULL;
+#ifdef CONFIG_MODEL_IN_SDCARD
+    // IMPORTANT: esp_srmodel_init() caches the first scan results globally.
+    // If we call it before SD is mounted, it can cache an empty model list and
+    // never rescan, so WakeNet will fail forever. Guard with an opendir() check.
+    ESP_LOGI(TAG, "Loading models from SD card path: /sdcard/srmodels");
+    DIR *dir = opendir("/sdcard/srmodels");
+    if (dir == NULL) {
+        ESP_LOGW(TAG, "SD model path not available yet (/sdcard/srmodels); retry after SD mount");
+        return ESP_ERR_INVALID_STATE;
     }
-
-    // Step 2: Find WakeNet model - directly access first model
-    // Note: esp_srmodel_filter has a bug - it requires both keywords to be non-NULL
-    // So we manually select the first available model from the list
-    char *model_name = NULL;
-    if (models->num > 0) {
-        model_name = models->model_name[0];
-        ESP_LOGI(TAG, "Found %d models, using first: %s", models->num, model_name);
-    } else {
-        ESP_LOGE(TAG, "No models found in flash - models->num = 0");
+    closedir(dir);
+    models = esp_srmodel_init("/sdcard/srmodels");
+#else
+    ESP_LOGI(TAG, "Loading models from flash partition: model");
+    models = esp_srmodel_init("model");  // Load from "model" partition
+#endif
+    if (!models) {
+        ESP_LOGE(TAG, "Failed to load models");
         return ESP_FAIL;
     }
+
+    // Step 2: Select a WakeNet model deterministically
+    const char *model_name = select_model_name(models);
+    if (model_name == NULL) {
+        ESP_LOGE(TAG, "No models found (models->num = %d)", models ? models->num : -1);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Found %d models, selected: %s", models->num, model_name);
 
     if (!model_name) {
         ESP_LOGE(TAG, "Model name is NULL");
@@ -112,6 +158,24 @@ esp_err_t wwd_init(const wwd_config_t *config)
         return ESP_FAIL;
     }
 
+    // Query expected chunk size for detect() and allocate staging buffer.
+    wwd_state.chunk_size = wwd_state.wakenet->get_samp_chunksize(wwd_state.model_data);
+    if (wwd_state.chunk_size <= 0) {
+        ESP_LOGE(TAG, "Invalid WakeNet chunk size: %d", wwd_state.chunk_size);
+        wwd_state.wakenet->destroy(wwd_state.model_data);
+        wwd_state.model_data = NULL;
+        return ESP_FAIL;
+    }
+
+    wwd_state.chunk_buffer = (int16_t *)malloc((size_t)wwd_state.chunk_size * sizeof(int16_t));
+    if (wwd_state.chunk_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate WakeNet chunk buffer (%d samples)", wwd_state.chunk_size);
+        wwd_state.wakenet->destroy(wwd_state.model_data);
+        wwd_state.model_data = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    wwd_state.chunk_filled = 0;
+
     // Set custom detection threshold if specified
     if (config->detection_threshold > 0.0f && config->detection_threshold < 1.0f) {
         int num_words = wwd_state.wakenet->get_word_num(wwd_state.model_data);
@@ -128,6 +192,9 @@ esp_err_t wwd_init(const wwd_config_t *config)
     ESP_LOGI(TAG, "Wake Word Detection initialized successfully");
     ESP_LOGI(TAG, "Model: wn9, Mode: %s, Words: %d",
              (det_mode == DET_MODE_95) ? "Aggressive(95)" : "Normal(90)", num_words);
+    ESP_LOGI(TAG, "WakeNet expected chunk size: %d samples", wwd_state.chunk_size);
+    ESP_LOGI(TAG, "WakeNet expected sample rate: %d Hz",
+             wwd_state.wakenet->get_samp_rate(wwd_state.model_data));
 
     for (int i = 1; i <= num_words; i++) {
         char *word_name = wwd_state.wakenet->get_word_name(wwd_state.model_data, i);
@@ -150,6 +217,9 @@ esp_err_t wwd_start(void)
     }
 
     ESP_LOGI(TAG, "Starting wake word detection...");
+    // Some WakeNet library builds crash on clean() before first detect().
+    // Rely on a fresh model instance + chunk buffer reset instead.
+    wwd_state.chunk_filled = 0;
     wwd_state.running = true;
 
     return ESP_OK;
@@ -177,23 +247,44 @@ esp_err_t wwd_feed_audio(const int16_t *audio_data, size_t length)
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Feed audio to WakeNet
-    wakenet_state_t state = wwd_state.wakenet->detect(
-        wwd_state.model_data,
-        (int16_t *)audio_data
-    );
+    if (wwd_state.chunk_buffer == NULL || wwd_state.chunk_size <= 0) {
+        ESP_LOGW(TAG, "WWD not ready (chunk buffer missing)");
+        return ESP_ERR_INVALID_STATE;
+    }
 
-    // Check if wake word detected
-    if (state == WAKENET_DETECTED) {
-        ESP_LOGI(TAG, "🎤 Wake word detected!");
+    // WakeNet detect() expects exactly get_samp_chunksize() samples per call.
+    // Accumulate incoming samples and call detect() in fixed-size chunks.
+    size_t remaining = length;
+    const int16_t *read_ptr = audio_data;
 
-        // Trigger callback
-        if (wwd_state.config.callback) {
-            wwd_state.config.callback(WWD_EVENT_DETECTED, wwd_state.config.user_data);
+    while (remaining > 0 && wwd_state.running) {
+        size_t space = (size_t)wwd_state.chunk_size - wwd_state.chunk_filled;
+        size_t to_copy = (remaining < space) ? remaining : space;
+
+        memcpy(&wwd_state.chunk_buffer[wwd_state.chunk_filled], read_ptr,
+               to_copy * sizeof(int16_t));
+        wwd_state.chunk_filled += to_copy;
+        read_ptr += to_copy;
+        remaining -= to_copy;
+
+        if (wwd_state.chunk_filled == (size_t)wwd_state.chunk_size) {
+            wakenet_state_t state = wwd_state.wakenet->detect(
+                wwd_state.model_data,
+                wwd_state.chunk_buffer
+            );
+            wwd_state.chunk_filled = 0;
+
+            if (state == WAKENET_DETECTED) {
+                ESP_LOGI(TAG, "🎤 Wake word detected!");
+
+                if (wwd_state.config.callback) {
+                    wwd_state.config.callback(WWD_EVENT_DETECTED, wwd_state.config.user_data);
+                }
+
+                // Stop after detection (will restart after pipeline finishes)
+                wwd_state.running = false;
+            }
         }
-
-        // Stop after detection (will restart after TTS finishes)
-        wwd_state.running = false;
     }
 
     return ESP_OK;
@@ -220,6 +311,13 @@ esp_err_t wwd_deinit(void)
         wwd_state.wakenet->destroy(wwd_state.model_data);
         wwd_state.model_data = NULL;
     }
+
+    if (wwd_state.chunk_buffer) {
+        free(wwd_state.chunk_buffer);
+        wwd_state.chunk_buffer = NULL;
+    }
+    wwd_state.chunk_filled = 0;
+    wwd_state.chunk_size = 0;
 
     wwd_state.wakenet = NULL;
     wwd_state.initialized = false;
