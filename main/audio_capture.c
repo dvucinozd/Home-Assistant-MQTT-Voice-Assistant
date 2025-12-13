@@ -67,6 +67,44 @@ static void capture_task(void *arg) {
     if (ret == ESP_OK && bytes_read > 0) {
       size_t num_samples = bytes_read / sizeof(int16_t);
 
+      // Some codec/I2S configurations return 2-channel interleaved samples even when
+      // we intend to operate in mono (the unused channel may be zeros or duplicates).
+      // WakeNet/VAD expect a clean mono stream, so detect and compact when needed.
+      if ((num_samples >= 8) && ((num_samples % 2) == 0)) {
+        size_t pairs = num_samples / 2;
+        size_t odd_near_zero = 0;
+        size_t even_near_zero = 0;
+        size_t dup_pairs = 0;
+
+        for (size_t i = 0; i < pairs; i++) {
+          int16_t left = buffer[i * 2];
+          int16_t right = buffer[i * 2 + 1];
+
+          if (right == 0 || right == 1 || right == -1) {
+            odd_near_zero++;
+          }
+          if (left == 0 || left == 1 || left == -1) {
+            even_near_zero++;
+          }
+          if (right == left || right == (int16_t)(left + 1) ||
+              right == (int16_t)(left - 1)) {
+            dup_pairs++;
+          }
+        }
+
+        bool looks_like_zero_right = (odd_near_zero * 10 >= pairs * 9) &&
+                                    (even_near_zero * 10 < pairs * 9);
+        bool looks_like_dup_stereo = (dup_pairs * 10 >= pairs * 9);
+
+        if (looks_like_zero_right || looks_like_dup_stereo) {
+          for (size_t i = 0; i < pairs; i++) {
+            buffer[i] = buffer[i * 2];
+          }
+          num_samples = pairs;
+          bytes_read = num_samples * sizeof(int16_t);
+        }
+      }
+
       // MODE 1: Wake Word Detection Mode (lightweight)
       if (capture_mode == CAPTURE_MODE_WAKE_WORD) {
         // Optional: Apply AGC if enabled to improve wake word detection on low mic levels.
