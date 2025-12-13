@@ -20,7 +20,7 @@ set IP=%IP:~1%
 
 echo ========================================
 echo   OTA URL:
-echo   http://%IP%:8080/esp32-p4-voice-assistant.bin
+echo   http://%IP%:8080/build/esp32-p4-voice-assistant.bin
 echo ========================================
 echo.
 echo Press Ctrl+C to stop the server.

@@ -47,6 +47,7 @@
 #define TAG "mp3_player"
 #define BUTTON_IO_NUM 35
 #define BUTTON_ACTIVE_LEVEL 0
+#define FOLLOWUP_RECORDING_MS 7000
 
 // Forward declarations
 static void music_player_event_handler(music_state_t state, int current_track, int total_tracks);
@@ -55,7 +56,8 @@ static void alarm_triggered_callback(uint8_t alarm_id, const char *alarm_label);
 static void intent_handler(const char *intent_name, const char *intent_data, const char *conversation_id);
 static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples);
 static void on_wake_word_detected(wwd_event_t event, void *user_data);
-static void test_audio_streaming(void);
+static esp_err_t test_audio_streaming(void);
+static esp_err_t start_audio_streaming(uint32_t max_recording_ms, const char *context_tag);
 static void restart_task(void *arg);
 
 typedef enum {
@@ -64,6 +66,7 @@ typedef enum {
   AUDIO_CMD_PIPELINE_ERROR_RESUME,
   AUDIO_CMD_STOP_WWD,
   AUDIO_CMD_RESTART_WWD,
+  AUDIO_CMD_START_FOLLOWUP_VAD,
   AUDIO_CMD_TIMER_BEEP,
   AUDIO_CMD_ALARM_BEEP,
   AUDIO_CMD_TIMER_CONFIRM_BEEP,
@@ -82,6 +85,7 @@ static volatile bool wake_detect_pending = false;
 static bool music_paused_for_notification = false;
 static esp_err_t wwd_init_result = ESP_FAIL;
 static float wwd_threshold = 0.5f;
+static bool followup_vad_pending = false;
 static esp_err_t init_wake_word_detection_if_needed(void);
 
 static void audio_post_cmd(audio_cmd_t cmd);
@@ -107,6 +111,22 @@ static void audio_cmd_task(void *arg) {
       // Small delay to allow codec/I2S to settle after stopping capture
       vTaskDelay(pdMS_TO_TICKS(50));
 
+      // If HA is offline/reconnecting, don't start the pipeline (avoid "beep then nothing").
+      if (!ha_client_is_connected()) {
+        ESP_LOGW(TAG, "HA not connected - ignoring wake and resuming WWD");
+        extern esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration,
+                                        uint8_t volume);
+        (void)beep_tone_play(300, 200, 50);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        wake_detect_pending = false;
+        led_status_set(LED_STATUS_IDLE);
+        if (mqtt_ha_is_connected()) {
+          mqtt_ha_update_sensor("va_status", "SPREMAN");
+        }
+        audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+        break;
+      }
+
       ESP_LOGI(TAG, "🔊 Playing wake word confirmation beep...");
       extern esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration,
                                       uint8_t volume);
@@ -118,7 +138,7 @@ static void audio_cmd_task(void *arg) {
       vTaskDelay(pdMS_TO_TICKS(50));
 
       ESP_LOGI(TAG, "Starting voice pipeline...");
-      test_audio_streaming();
+      (void)test_audio_streaming();
 
       wake_detect_pending = false;
       break;
@@ -147,9 +167,12 @@ static void audio_cmd_task(void *arg) {
       wwd_stop();
       vTaskDelay(pdMS_TO_TICKS(50));
 
+      // After TTS or pipeline activity, give codec/I2S a short guard time
+      // before re-entering wake mode to avoid immediate re-trigger/slowdown.
+      vTaskDelay(pdMS_TO_TICKS(300));
       wwd_start();
       audio_capture_start_wake_word_mode(wwd_audio_feed_wrapper);
-      vTaskDelay(pdMS_TO_TICKS(100));
+      vTaskDelay(pdMS_TO_TICKS(200));
 
       // Set LED to IDLE (green) and update status
       led_status_set(LED_STATUS_IDLE);
@@ -194,6 +217,24 @@ static void audio_cmd_task(void *arg) {
         }
       } else {
         ESP_LOGE(TAG, "Failed to restart WWD: %s", esp_err_to_name(wwd_init_result));
+      }
+      break;
+    }
+
+    case AUDIO_CMD_START_FOLLOWUP_VAD: {
+      // Start a follow-up capture without wake word (assistant asked a question)
+      wwd_stop();
+      (void)audio_capture_stop_wait(1000);
+
+      led_status_set(LED_STATUS_LISTENING);
+      if (mqtt_ha_is_connected()) {
+        mqtt_ha_update_sensor("va_status", "SLUSAM...");
+      }
+
+      esp_err_t ret = start_audio_streaming(FOLLOWUP_RECORDING_MS, "follow-up");
+      if (ret != ESP_OK) {
+        followup_vad_pending = false;
+        audio_post_cmd(AUDIO_CMD_RESUME_WWD);
       }
       break;
     }
@@ -340,6 +381,9 @@ static void audio_cmd_task(void *arg) {
 
 static void conversation_response_handler(const char *response_text,
                                           const char *conversation_id) {
+  // Default: no follow-up capture unless we detect a question response.
+  followup_vad_pending = false;
+
   // Check if this is a timer completion signal (empty string from run-end)
   if (response_text && strlen(response_text) == 0) {
     ESP_LOGI(TAG, "🔄 Timer pipeline completed - resuming wake word detection...");
@@ -371,6 +415,20 @@ static void conversation_response_handler(const char *response_text,
     }
   }
   // ═══════════════════════════════════════════════════════════════════
+
+  // If assistant response ends with a question mark, schedule follow-up capture
+  if (response_text) {
+    size_t len = strlen(response_text);
+    while (len > 0 && isspace((unsigned char)response_text[len - 1])) {
+      len--;
+    }
+    if (len > 0 && response_text[len - 1] == '?') {
+      followup_vad_pending = true;
+      ESP_LOGI(TAG,
+               "Response is a question - will start 7s VAD capture instead of"
+               " resuming wake word");
+    }
+  }
 
   // Parse music control commands from HA response
   if (response_text && local_music_player_is_initialized()) {
@@ -536,6 +594,9 @@ static char *pipeline_handler = NULL;
 static int audio_chunks_sent = 0;
 static bool pipeline_active = false;
 static int warmup_chunks_skip = 0;
+static uint32_t pipeline_start_ts_ms = 0;
+static uint32_t pipeline_max_duration_ms = 0;
+static int stream_send_fail_streak = 0;
 
 static uint32_t vad_threshold = 180;
 static uint32_t vad_silence_duration = 1800;
@@ -655,7 +716,7 @@ void va_control_action_test_tts(const char *text) {
   (void)ha_client_request_tts(text);
 }
 
-static void test_audio_streaming(void);
+static esp_err_t test_audio_streaming(void);
 static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples);
 
 static esp_err_t init_wake_word_detection_if_needed(void) {
@@ -1138,7 +1199,11 @@ static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples) {
 // TTS PLAYBACK COMPLETE HANDLER
 // ═══════════════════════════════════════════════════════════════════════════
 static void tts_playback_complete_handler(void) {
-  ESP_LOGI(TAG, "🔄 TTS playback complete - resuming wake word detection...");
+  bool trigger_followup = followup_vad_pending;
+  followup_vad_pending = false;
+
+  ESP_LOGI(TAG, "🔄 TTS playback complete - %s",
+           trigger_followup ? "starting follow-up capture" : "resuming wake word detection");
 
   // ═══════════════════════════════════════════════════════════════════
   // >>> NOVO: Publish VA status za CYD display <<<
@@ -1152,19 +1217,29 @@ static void tts_playback_complete_handler(void) {
   led_status_set(LED_STATUS_IDLE);
 
   if (music_paused_for_tts && local_music_player_is_initialized()) {
-    ESP_LOGI(TAG, "Resuming music playback after TTS");
-    local_music_player_resume();
-    music_paused_for_tts = false;
+    if (trigger_followup) {
+      ESP_LOGI(TAG, "Keeping music paused for follow-up capture");
+    } else {
+      ESP_LOGI(TAG, "Resuming music playback after TTS");
+      local_music_player_resume();
+      music_paused_for_tts = false;
 
-    // If music is now playing, keep WWD disabled to avoid codec conflicts.
-    if (local_music_player_get_state() == MUSIC_STATE_PLAYING ||
-        local_music_player_get_state() == MUSIC_STATE_PAUSED) {
-      ESP_LOGI(TAG, "Keeping WWD disabled while music is playing");
-      return;
+      // If music is now playing, keep WWD disabled to avoid codec conflicts.
+      if (local_music_player_get_state() == MUSIC_STATE_PLAYING ||
+          local_music_player_get_state() == MUSIC_STATE_PAUSED) {
+        ESP_LOGI(TAG, "Keeping WWD disabled while music is playing");
+        return;
+      }
     }
   }
 
-  audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+  // Give the codec/I2S a short guard period after TTS before re-entering WWD
+  vTaskDelay(pdMS_TO_TICKS(600));
+  if (trigger_followup) {
+    audio_post_cmd(AUDIO_CMD_START_FOLLOWUP_VAD);
+  } else {
+    audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1172,6 +1247,10 @@ static void tts_playback_complete_handler(void) {
 // ═══════════════════════════════════════════════════════════════════════════
 static void pipeline_error_handler(const char *error_code, const char *error_message) {
   ESP_LOGE(TAG, "Pipeline error occurred: %s - %s", error_code, error_message);
+
+  followup_vad_pending = false;
+  stream_send_fail_streak = 0;
+  pipeline_max_duration_ms = 0;
 
   // Set LED to ERROR (red blinking)
   led_status_set(LED_STATUS_ERROR);
@@ -1182,6 +1261,7 @@ static void pipeline_error_handler(const char *error_code, const char *error_mes
     free(pipeline_handler);
     pipeline_handler = NULL;
   }
+  pipeline_max_duration_ms = 0;
   audio_chunks_sent = 0;
 
   ESP_LOGI(TAG, "Pipeline state cleaned up, scheduling wake word resume...");
@@ -1382,7 +1462,9 @@ static void vad_event_handler(audio_capture_vad_event_t event) {
       free(pipeline_handler);
       pipeline_handler = NULL;
     }
+    pipeline_max_duration_ms = 0;
     audio_chunks_sent = 0;
+    stream_send_fail_streak = 0;
 
     ESP_LOGI(TAG,
              "Waiting for TTS playback to complete before resuming WWD...");
@@ -1394,6 +1476,62 @@ static void audio_capture_handler(const uint8_t *audio_data, size_t length) {
   if (!pipeline_active || pipeline_handler == NULL) {
     return;
   }
+
+  // Abort if HA dropped while recording; avoid getting stuck in a blue/listening state.
+  if (!ha_client_is_connected()) {
+    ESP_LOGW(TAG, "HA disconnected during capture - aborting pipeline");
+    pipeline_active = false;
+    pipeline_max_duration_ms = 0;
+    stream_send_fail_streak = 0;
+    audio_capture_stop();
+    ha_client_end_audio_stream();
+    if (pipeline_handler != NULL) {
+      free(pipeline_handler);
+      pipeline_handler = NULL;
+    }
+    audio_chunks_sent = 0;
+    followup_vad_pending = false;
+    led_status_set(LED_STATUS_IDLE);
+    if (mqtt_ha_is_connected()) {
+      mqtt_ha_update_sensor("va_status", "SPREMAN");
+    }
+    audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+    return;
+  }
+
+  // Enforce a hard stop if recording exceeds the configured maximum duration.
+  if (pipeline_max_duration_ms > 0) {
+    uint32_t elapsed = esp_log_timestamp() - pipeline_start_ts_ms;
+    if (elapsed >= pipeline_max_duration_ms) {
+      ESP_LOGW(TAG, "Max recording exceeded (%lums) - stopping capture",
+               (unsigned long)pipeline_max_duration_ms);
+      pipeline_active = false;
+      pipeline_max_duration_ms = 0;
+      stream_send_fail_streak = 0;
+      audio_capture_stop();
+      ha_client_end_audio_stream();
+      if (pipeline_handler != NULL) {
+        free(pipeline_handler);
+        pipeline_handler = NULL;
+      }
+      audio_chunks_sent = 0;
+      followup_vad_pending = false;
+
+      // Reset status and resume wake word listening to avoid getting stuck.
+      led_status_set(LED_STATUS_IDLE);
+      if (mqtt_ha_is_connected()) {
+        mqtt_ha_update_sensor("va_status", "SPREMAN");
+      }
+      audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+
+      // Let TTS complete handler decide on WWD resume/follow-up.
+      ESP_LOGI(TAG, "Waiting for TTS playback to complete before resuming");
+      return;
+    }
+  }
+
+  // If HA is not connected/authenticated, avoid blocking/slowdowns.
+  // (Handled above with cleanup; should no longer reach here.)
 
   // The HA pipeline provides `stt_binary_handler_id` asynchronously (run-start).
   // Until then, ignore capture chunks without consuming warmup budget or tearing down the pipeline.
@@ -1414,26 +1552,69 @@ static void audio_capture_handler(const uint8_t *audio_data, size_t length) {
   esp_err_t ret = ha_client_stream_audio(audio_data, length, pipeline_handler);
   if (ret == ESP_OK) {
     audio_chunks_sent++;
+    stream_send_fail_streak = 0;
   } else {
     if (ret == ESP_ERR_INVALID_STATE) {
       // Race: handler id may have been cleared/reset while capture was running.
       return;
     }
-    ESP_LOGW(TAG, "Failed to stream audio chunk - stopping pipeline");
-    pipeline_error_handler("stream_send_failed", "Failed to stream audio chunk");
+    stream_send_fail_streak++;
+    ESP_LOGW(TAG, "Failed to stream audio chunk (%d bytes) (%d): %s",
+             (int)length, stream_send_fail_streak, esp_err_to_name(ret));
+
+    // If the transport starts timing out/dropping writes, abort this run so the
+    // user can try again (avoids long blue listening with no response).
+    if (stream_send_fail_streak >= 3) {
+      ESP_LOGW(TAG, "Too many stream send failures - aborting pipeline");
+      pipeline_active = false;
+      pipeline_max_duration_ms = 0;
+      stream_send_fail_streak = 0;
+      audio_capture_stop();
+      (void)ha_client_end_audio_stream();
+      if (pipeline_handler != NULL) {
+        free(pipeline_handler);
+        pipeline_handler = NULL;
+      }
+      audio_chunks_sent = 0;
+      followup_vad_pending = false;
+      led_status_set(LED_STATUS_IDLE);
+      if (mqtt_ha_is_connected()) {
+        mqtt_ha_update_sensor("va_status", "SPREMAN");
+      }
+      audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+      return;
+    }
   }
 }
 
-static void test_audio_streaming(void) {
+static esp_err_t start_audio_streaming(uint32_t max_recording_ms,
+                                       const char *context_tag) {
+  if (pipeline_active) {
+    ESP_LOGW(TAG, "Pipeline already active - skipping new start");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (!ha_client_is_connected()) {
+    ESP_LOGW(TAG, "Cannot start pipeline - HA not connected");
+    led_status_set(LED_STATUS_IDLE);
+    if (mqtt_ha_is_connected()) {
+      mqtt_ha_update_sensor("va_status", "SPREMAN");
+    }
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  uint32_t max_ms = (max_recording_ms > 0) ? max_recording_ms : vad_max_recording;
+
   ESP_LOGI(TAG, "========================================");
-  ESP_LOGI(TAG, "Starting Audio Streaming Test with VAD");
+  const char *label = context_tag ? context_tag : "with VAD";
+  ESP_LOGI(TAG, "Starting Audio Streaming - %s", label);
   ESP_LOGI(TAG, "========================================");
 
   vad_config_t vad_config = {.sample_rate = 16000,
                              .speech_threshold = vad_threshold,
                              .silence_duration_ms = vad_silence_duration,
                              .min_speech_duration_ms = vad_min_speech,
-                             .max_recording_ms = vad_max_recording};
+                             .max_recording_ms = max_ms};
 
   ESP_LOGI(TAG,
            "📊 VAD Config: threshold=%lu, silence=%lums, min_speech=%lums, "
@@ -1444,21 +1625,30 @@ static void test_audio_streaming(void) {
   esp_err_t ret = audio_capture_enable_vad(&vad_config, vad_event_handler);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to enable VAD");
-    return;
+    return ret;
   }
 
   pipeline_handler = ha_client_start_conversation();
   if (pipeline_handler == NULL) {
     ESP_LOGE(TAG, "Failed to start pipeline");
     audio_capture_disable_vad();
-    return;
+    led_status_set(LED_STATUS_IDLE);
+    if (mqtt_ha_is_connected()) {
+      mqtt_ha_update_sensor("va_status", "SPREMAN");
+    }
+    return ESP_FAIL;
   }
 
   ESP_LOGI(TAG, "Pipeline started: %s", pipeline_handler);
-  ESP_LOGI(TAG, "🎙️  Start speaking now! (VAD will auto-stop after silence)");
+  ESP_LOGI(TAG,
+           "🎙️  Start speaking now! (auto-stop after silence or %lums)",
+           (unsigned long)vad_config.max_recording_ms);
 
   audio_chunks_sent = 0;
   pipeline_active = true;
+  pipeline_start_ts_ms = esp_log_timestamp();
+  pipeline_max_duration_ms = vad_config.max_recording_ms;
+  stream_send_fail_streak = 0;
   warmup_chunks_skip = 10;
 
   audio_capture_reset_vad();
@@ -1470,8 +1660,25 @@ static void test_audio_streaming(void) {
     pipeline_handler = NULL;
     pipeline_active = false;
     audio_chunks_sent = 0;
+    pipeline_max_duration_ms = 0;
     audio_capture_disable_vad();
+    led_status_set(LED_STATUS_IDLE);
+    if (mqtt_ha_is_connected()) {
+      mqtt_ha_update_sensor("va_status", "SPREMAN");
+    }
+    return ret;
   }
+
+  return ESP_OK;
+}
+
+static esp_err_t test_audio_streaming(void) {
+  esp_err_t ret = start_audio_streaming(vad_max_recording, "with VAD");
+  if (ret != ESP_OK) {
+    // On failure, resume wake word to avoid being stuck.
+    audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+  }
+  return ret;
 }
 
 void app_main(void) {

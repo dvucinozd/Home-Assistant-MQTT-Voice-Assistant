@@ -48,6 +48,10 @@ static int stt_binary_handler_id = -1;
 // Flag to track if a timer was successfully started (to skip negative HA response)
 static bool timer_started_this_conversation = false;
 
+// Reusable buffer for binary audio frames (avoid per-chunk malloc/free jitter)
+static uint8_t *audio_frame_buf = NULL;
+static size_t audio_frame_buf_cap = 0;
+
 // Event group for tracking connection state
 static EventGroupHandle_t ha_event_group;
 #define HA_CONNECTED_BIT BIT0
@@ -55,7 +59,11 @@ static EventGroupHandle_t ha_event_group;
 
 // Avoid blocking event loop / audio capture tasks indefinitely on socket writes.
 #define HA_SEND_TEXT_TIMEOUT_MS 2000
-#define HA_SEND_AUDIO_TIMEOUT_MS 100
+// Slightly longer timeout for binary audio writes to reduce ws-client lock contention
+// while streaming STT audio frames.
+// On lossy WiFi links HA can apply TCP backpressure; allow more time before treating
+// a write as failed (prevents frequent transport_poll_write(0) disconnects).
+#define HA_SEND_AUDIO_TIMEOUT_MS 2000
 
 // Forward declarations
 static void download_tts_audio(const char *url);
@@ -613,7 +621,10 @@ esp_err_t ha_client_init(void) {
       .uri = ws_uri,
       .task_stack = 8192,
       .buffer_size = 4096,
-      .reconnect_timeout_ms = 10000,
+      // Connection manager owns reconnection; keep ws-client from doing its own
+      // auto-reconnect loop to avoid dueling reconnects.
+      .disable_auto_reconnect = true,
+      .reconnect_timeout_ms = 0,
       .network_timeout_ms = 30000,
       .pingpong_timeout_sec = 10,
   };
@@ -703,7 +714,8 @@ esp_err_t ha_client_send_text(const char *text) {
   free(json_str);
   cJSON_Delete(root);
 
-  return (ret >= 0) ? ESP_OK : ESP_FAIL;
+  // Note: esp_websocket_client_send_* may return 0 on timeout; treat as failure.
+  return (ret > 0) ? ESP_OK : ESP_FAIL;
 }
 
 char *ha_client_start_conversation(void) {
@@ -745,7 +757,8 @@ char *ha_client_start_conversation(void) {
   free(json_str);
   cJSON_Delete(root);
 
-  if (ret < 0) {
+  // Note: send may return 0 on timeout; treat as failure.
+  if (ret <= 0) {
     ESP_LOGE(TAG, "Failed to start pipeline");
     return NULL;
   }
@@ -779,22 +792,29 @@ esp_err_t ha_client_stream_audio(const uint8_t *audio_data, size_t length,
   // HA Assist Pipeline expects binary frames with format:
   // [1 byte: handler_id][N bytes: PCM audio data]
   // Audio format: 16-bit PCM @ 16kHz mono
-  uint8_t *frame = malloc(1 + length);
-  if (frame == NULL) {
-    ESP_LOGE(TAG, "Failed to allocate binary frame");
-    return ESP_ERR_NO_MEM;
+  size_t needed = 1 + length;
+  if (audio_frame_buf == NULL || audio_frame_buf_cap < needed) {
+    size_t new_cap = needed;
+    uint8_t *new_buf = realloc(audio_frame_buf, new_cap);
+    if (new_buf == NULL) {
+      ESP_LOGE(TAG, "Failed to allocate binary frame buffer (%u bytes)",
+               (unsigned)new_cap);
+      return ESP_ERR_NO_MEM;
+    }
+    audio_frame_buf = new_buf;
+    audio_frame_buf_cap = new_cap;
   }
 
-  frame[0] = (uint8_t)stt_binary_handler_id;
-  memcpy(frame + 1, audio_data, length);
+  audio_frame_buf[0] = (uint8_t)stt_binary_handler_id;
+  memcpy(audio_frame_buf + 1, audio_data, length);
 
-  int ret = esp_websocket_client_send_bin(ws_client, (const char *)frame,
-                                          1 + length,
+  int ret = esp_websocket_client_send_bin(ws_client, (const char *)audio_frame_buf,
+                                          needed,
                                           pdMS_TO_TICKS(HA_SEND_AUDIO_TIMEOUT_MS));
-  free(frame);
-
-  if (ret < 0) {
-    ESP_LOGE(TAG, "Failed to send audio chunk (%d bytes)", length);
+  // Note: send may return 0 on timeout; treat as failure.
+  if (ret <= 0) {
+    ESP_LOGE(TAG, "Failed to send audio chunk (%d bytes, ret=%d)", (int)length,
+             ret);
     return ESP_FAIL;
   }
 
@@ -819,7 +839,7 @@ esp_err_t ha_client_end_audio_stream(void) {
   int ret = esp_websocket_client_send_bin(ws_client, (const char *)end_frame, 1,
                                           pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
 
-  if (ret < 0) {
+  if (ret <= 0) {
     ESP_LOGE(TAG, "Failed to send end-of-audio signal");
     return ESP_FAIL;
   }
@@ -892,7 +912,8 @@ esp_err_t ha_client_request_tts(const char *text) {
   free(json_str);
   cJSON_Delete(root);
 
-  return (ret >= 0) ? ESP_OK : ESP_FAIL;
+  // Note: send may return 0 on timeout; treat as failure.
+  return (ret > 0) ? ESP_OK : ESP_FAIL;
 }
 
 void ha_client_stop(void) {
@@ -900,6 +921,12 @@ void ha_client_stop(void) {
     esp_websocket_client_stop(ws_client);
     esp_websocket_client_destroy(ws_client);
     ws_client = NULL;
+  }
+
+  if (audio_frame_buf != NULL) {
+    free(audio_frame_buf);
+    audio_frame_buf = NULL;
+    audio_frame_buf_cap = 0;
   }
 
   if (ha_event_group) {

@@ -121,7 +121,6 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode
             esp_codec_dev_close(record_dev_handle);
             record_dev_open = false;
         }
-        ret |= esp_codec_dev_set_in_gain(record_dev_handle, CODEC_DEFAULT_ADC_VOLUME);
     }
     if (play_dev_handle) {
         // Avoid calling close() on an unopened device to prevent noisy I2S driver logs.
@@ -133,14 +132,24 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode
     }
 
     if (record_dev_handle) {
+        // Program desired input level before opening (works with ES8311)
+        ret |= esp_codec_dev_set_in_gain(record_dev_handle, CODEC_DEFAULT_ADC_VOLUME);
+    }
+    if (record_dev_handle) {
         esp_err_t open_ret = esp_codec_dev_open(record_dev_handle, &fs);
         ret |= open_ret;
         record_dev_open = (open_ret == ESP_OK);
+        if (open_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to open record codec (ret=%s)", esp_err_to_name(open_ret));
+        }
     }
     if (play_dev_handle) {
         esp_err_t open_ret = esp_codec_dev_open(play_dev_handle, &fs);
         ret |= open_ret;
         play_dev_open = (open_ret == ESP_OK);
+        if (open_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to open playback codec (ret=%s)", esp_err_to_name(open_ret));
+        }
     }
     audio_bus_unlock();
     return ret;

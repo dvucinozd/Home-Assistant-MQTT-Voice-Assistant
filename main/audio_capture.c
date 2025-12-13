@@ -197,6 +197,11 @@ static void capture_task(void *arg) {
     } else if (ret != ESP_OK) {
       ESP_LOGW(TAG, "I2S read failed: %s", esp_err_to_name(ret));
       vTaskDelay(pdMS_TO_TICKS(10));
+    } else if (bytes_read == 0) {
+      // Detect a stalled stream early
+      if ((chunk_count % 100) == 0) {
+        ESP_LOGW(TAG, "I2S read returned 0 bytes (chunk=%d)", chunk_count);
+      }
     }
   }
 
