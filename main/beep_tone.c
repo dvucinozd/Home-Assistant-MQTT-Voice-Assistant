@@ -84,7 +84,7 @@ esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration, uint8_t volume)
     // Write PCM data to I2S
     size_t bytes_to_write = num_samples * sizeof(int16_t);
     size_t bytes_written = 0;
-    ret = bsp_extra_i2s_write(pcm_buffer, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
+    ret = bsp_extra_i2s_write(pcm_buffer, bytes_to_write, &bytes_written, 1000);
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));

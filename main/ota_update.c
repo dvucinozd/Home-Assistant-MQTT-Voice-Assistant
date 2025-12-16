@@ -11,6 +11,7 @@
 #include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "led_status.h"
 #include <string.h>
 
 static const char *TAG = "ota_update";
@@ -54,6 +55,9 @@ static void ota_update_task(void *pvParameter) {
 
   ESP_LOGI(TAG, "Starting OTA update from: %s", url);
   notify_progress(OTA_STATE_DOWNLOADING, 0, "Starting OTA update");
+
+  // Set LED to OTA mode (white breathing)
+  led_status_set(LED_STATUS_OTA);
 
   // Allocate download buffer
   buffer = malloc(buffer_size);
@@ -198,6 +202,12 @@ static void ota_update_task(void *pvParameter) {
   esp_restart();
 
 ota_end:
+  // Restore LED to IDLE on failure (success path restarts, so this only runs on
+  // failure)
+  if (ota_state == OTA_STATE_FAILED) {
+    led_status_set(LED_STATUS_IDLE);
+  }
+
   // Free buffer
   if (buffer) {
     free(buffer);

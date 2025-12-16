@@ -27,6 +27,7 @@ static const char *TAG = "led_status";
 
 // Effect timing (ms)
 #define PULSE_PERIOD_MS 1000
+#define FAST_PULSE_MS 300 // Fast pulsing for SPEAKING and OTA
 #define BLINK_PERIOD_MS 500
 #define FAST_BLINK_MS 200
 #define EFFECT_STEP_MS 20
@@ -137,13 +138,21 @@ static void led_effect_task(void *arg) {
     }
 
     case LED_STATUS_OTA: {
-      // White breathing
-      float phase =
-          (float)(tick % (PULSE_PERIOD_MS * 2)) / (PULSE_PERIOD_MS * 2);
+      // White fast pulsing during OTA update
+      float phase = (float)(tick % FAST_PULSE_MS) / FAST_PULSE_MS;
       float intensity =
-          0.1f + 0.9f * (0.5f + 0.5f * sinf(phase * 2 * 3.14159f));
+          0.2f + 0.8f * (0.5f + 0.5f * sinf(phase * 2 * 3.14159f));
       uint8_t val = (uint8_t)(255 * intensity);
       apply_rgb(val, val, val);
+      break;
+    }
+
+    case LED_STATUS_SPEAKING: {
+      // Cyan fast pulsing during TTS playback
+      float phase = (float)(tick % FAST_PULSE_MS) / FAST_PULSE_MS;
+      float intensity =
+          0.3f + 0.7f * (0.5f + 0.5f * sinf(phase * 2 * 3.14159f));
+      apply_rgb(0, (uint8_t)(255 * intensity), (uint8_t)(255 * intensity));
       break;
     }
 
@@ -187,7 +196,7 @@ static void stop_effect_task(void) {
 static bool status_needs_effect(led_status_t status) {
   return (status == LED_STATUS_LISTENING || status == LED_STATUS_PROCESSING ||
           status == LED_STATUS_ERROR || status == LED_STATUS_CONNECTING ||
-          status == LED_STATUS_OTA);
+          status == LED_STATUS_OTA || status == LED_STATUS_SPEAKING);
 }
 
 // ============================================================================
@@ -265,7 +274,10 @@ void led_status_set(led_status_t status) {
   led_status_t old_status = current_status;
   current_status = status;
 
-  ESP_LOGI(TAG, "LED status: %d -> %d", old_status, status);
+  // Log with task name for debugging
+  const char *task_name = pcTaskGetName(NULL);
+  ESP_LOGI(TAG, "LED status: %d -> %d [%s]", old_status, status,
+           task_name ? task_name : "unknown");
 
   // Handle effect task
   bool old_needs_effect = status_needs_effect(old_status);
@@ -297,16 +309,12 @@ void led_status_set(led_status_t status) {
     apply_rgb(0, 80, 0);
     break;
 
-  case LED_STATUS_SPEAKING:
-    // Cyan
-    apply_rgb(0, 255, 255);
-    break;
-
   case LED_STATUS_LISTENING:
   case LED_STATUS_PROCESSING:
   case LED_STATUS_ERROR:
   case LED_STATUS_CONNECTING:
   case LED_STATUS_OTA:
+  case LED_STATUS_SPEAKING:
     // Effects handled by task
     if (new_needs_effect && !old_needs_effect) {
       start_effect_task();

@@ -39,10 +39,11 @@
 #include "ota_update.h"
 #include "timer_manager.h"
 #include "tts_player.h"
+#include "va_control.h"
 #include "webserial.h"
 #include "wifi_manager.h"
 #include "wwd.h"
-#include "va_control.h"
+
 
 #define TAG "mp3_player"
 #define BUTTON_IO_NUM 35
@@ -50,14 +51,17 @@
 #define FOLLOWUP_RECORDING_MS 7000
 
 // Forward declarations
-static void music_player_event_handler(music_state_t state, int current_track, int total_tracks);
+static void music_player_event_handler(music_state_t state, int current_track,
+                                       int total_tracks);
 static void timer_finished_callback(uint8_t timer_id, const char *timer_name);
 static void alarm_triggered_callback(uint8_t alarm_id, const char *alarm_label);
-static void intent_handler(const char *intent_name, const char *intent_data, const char *conversation_id);
+static void intent_handler(const char *intent_name, const char *intent_data,
+                           const char *conversation_id);
 static void wwd_audio_feed_wrapper(const int16_t *audio_data, size_t samples);
 static void on_wake_word_detected(wwd_event_t event, void *user_data);
 static esp_err_t test_audio_streaming(void);
-static esp_err_t start_audio_streaming(uint32_t max_recording_ms, const char *context_tag);
+static esp_err_t start_audio_streaming(uint32_t max_recording_ms,
+                                       const char *context_tag);
 static void restart_task(void *arg);
 
 typedef enum {
@@ -111,7 +115,8 @@ static void audio_cmd_task(void *arg) {
       // Small delay to allow codec/I2S to settle after stopping capture
       vTaskDelay(pdMS_TO_TICKS(50));
 
-      // If HA is offline/reconnecting, don't start the pipeline (avoid "beep then nothing").
+      // If HA is offline/reconnecting, don't start the pipeline (avoid "beep
+      // then nothing").
       if (!ha_client_is_connected()) {
         ESP_LOGW(TAG, "HA not connected - ignoring wake and resuming WWD");
         extern esp_err_t beep_tone_play(uint16_t frequency, uint16_t duration,
@@ -132,7 +137,8 @@ static void audio_cmd_task(void *arg) {
                                       uint8_t volume);
       esp_err_t beep_ret = beep_tone_play(800, 120, 40);
       if (beep_ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to play beep tone: %s", esp_err_to_name(beep_ret));
+        ESP_LOGW(TAG, "Failed to play beep tone: %s",
+                 esp_err_to_name(beep_ret));
       }
 
       vTaskDelay(pdMS_TO_TICKS(50));
@@ -145,7 +151,8 @@ static void audio_cmd_task(void *arg) {
     }
 
     case AUDIO_CMD_RESUME_WWD: {
-      // Don't try to listen while local music is actively playing (codec/I2S conflict)
+      // Don't try to listen while local music is actively playing (codec/I2S
+      // conflict)
       if (local_music_player_is_initialized() &&
           (local_music_player_get_state() == MUSIC_STATE_PLAYING ||
            local_music_player_get_state() == MUSIC_STATE_PAUSED)) {
@@ -216,13 +223,15 @@ static void audio_cmd_task(void *arg) {
           audio_post_cmd(AUDIO_CMD_RESUME_WWD);
         }
       } else {
-        ESP_LOGE(TAG, "Failed to restart WWD: %s", esp_err_to_name(wwd_init_result));
+        ESP_LOGE(TAG, "Failed to restart WWD: %s",
+                 esp_err_to_name(wwd_init_result));
       }
       break;
     }
 
     case AUDIO_CMD_START_FOLLOWUP_VAD: {
-      // Start a follow-up capture without wake word (assistant asked a question)
+      // Start a follow-up capture without wake word (assistant asked a
+      // question)
       wwd_stop();
       (void)audio_capture_stop_wait(1000);
 
@@ -275,7 +284,8 @@ static void audio_cmd_task(void *arg) {
       vTaskDelay(pdMS_TO_TICKS(200));
 
       // Resume music if we paused it; keep WWD disabled while music plays.
-      if (music_paused_for_notification && local_music_player_is_initialized()) {
+      if (music_paused_for_notification &&
+          local_music_player_is_initialized()) {
         ESP_LOGI(TAG, "Resuming music after notification");
         local_music_player_resume();
         music_paused_for_notification = false;
@@ -292,7 +302,8 @@ static void audio_cmd_task(void *arg) {
 
     case AUDIO_CMD_TIMER_CONFIRM_BEEP:
     case AUDIO_CMD_TIMER_ERROR_BEEP: {
-      // Short beeps used for feedback during pipeline (do not auto-resume WWD here)
+      // Short beeps used for feedback during pipeline (do not auto-resume WWD
+      // here)
       (void)audio_capture_stop_wait(1000);
 
       bool paused_music = false;
@@ -386,7 +397,8 @@ static void conversation_response_handler(const char *response_text,
 
   // Check if this is a timer completion signal (empty string from run-end)
   if (response_text && strlen(response_text) == 0) {
-    ESP_LOGI(TAG, "🔄 Timer pipeline completed - resuming wake word detection...");
+    ESP_LOGI(TAG,
+             "🔄 Timer pipeline completed - resuming wake word detection...");
 
     // Set LED back to IDLE
     led_status_set(LED_STATUS_IDLE);
@@ -499,8 +511,8 @@ static void network_event_callback(network_type_t type, bool connected) {
             "✅ SD card mounted successfully - local music playback enabled");
 
 #ifdef CONFIG_MODEL_IN_SDCARD
-        // In SD-model mode, WakeNet init may have failed at boot because /sdcard
-        // wasn't mounted yet. Retry now that SD is available.
+        // In SD-model mode, WakeNet init may have failed at boot because
+        // /sdcard wasn't mounted yet. Retry now that SD is available.
         if (wwd_init_result != ESP_OK) {
           ESP_LOGI(TAG, "Retrying WakeNet init now that SD is mounted...");
           (void)init_wake_word_detection_if_needed();
@@ -612,14 +624,18 @@ static uint16_t agc_target_level = 4000;
 // =============================================================================
 
 static float clamp_float(float v, float lo, float hi) {
-  if (v < lo) return lo;
-  if (v > hi) return hi;
+  if (v < lo)
+    return lo;
+  if (v > hi)
+    return hi;
   return v;
 }
 
 float va_control_get_wwd_threshold(void) { return wwd_threshold; }
 uint32_t va_control_get_vad_threshold(void) { return vad_threshold; }
-uint32_t va_control_get_vad_silence_duration_ms(void) { return vad_silence_duration; }
+uint32_t va_control_get_vad_silence_duration_ms(void) {
+  return vad_silence_duration;
+}
 uint32_t va_control_get_vad_min_speech_ms(void) { return vad_min_speech; }
 uint32_t va_control_get_vad_max_recording_ms(void) { return vad_max_recording; }
 bool va_control_get_agc_enabled(void) { return agc_enabled; }
@@ -707,7 +723,9 @@ esp_err_t va_control_set_agc_target_level(uint16_t target_level) {
 void va_control_action_restart(void) {
   (void)xTaskCreate(restart_task, "restart", 2048, NULL, 3, NULL);
 }
-void va_control_action_wwd_resume(void) { audio_post_cmd(AUDIO_CMD_RESUME_WWD); }
+void va_control_action_wwd_resume(void) {
+  audio_post_cmd(AUDIO_CMD_RESUME_WWD);
+}
 void va_control_action_wwd_stop(void) { audio_post_cmd(AUDIO_CMD_STOP_WWD); }
 void va_control_action_test_tts(const char *text) {
   if (text == NULL || text[0] == '\0') {
@@ -794,25 +812,25 @@ static void mqtt_music_stop_callback(const char *entity_id,
 }
 
 static void mqtt_music_pause_callback(const char *entity_id,
-                                       const char *payload) {
+                                      const char *payload) {
   ESP_LOGI(TAG, "MQTT: Pause music button pressed");
   audio_post_cmd(AUDIO_CMD_MUSIC_PAUSE);
 }
 
 static void mqtt_music_resume_callback(const char *entity_id,
-                                        const char *payload) {
+                                       const char *payload) {
   ESP_LOGI(TAG, "MQTT: Resume music button pressed");
   audio_post_cmd(AUDIO_CMD_MUSIC_RESUME);
 }
 
 static void mqtt_music_next_callback(const char *entity_id,
-                                      const char *payload) {
+                                     const char *payload) {
   ESP_LOGI(TAG, "MQTT: Next track button pressed");
   audio_post_cmd(AUDIO_CMD_MUSIC_NEXT);
 }
 
 static void mqtt_music_previous_callback(const char *entity_id,
-                                           const char *payload) {
+                                         const char *payload) {
   ESP_LOGI(TAG, "MQTT: Previous track button pressed");
   audio_post_cmd(AUDIO_CMD_MUSIC_PREVIOUS);
 }
@@ -842,6 +860,50 @@ static void mqtt_test_tts_callback(const char *entity_id, const char *payload) {
     }
   } else {
     ESP_LOGW(TAG, "Cannot test TTS - not connected to Home Assistant");
+  }
+}
+
+static void va_diag_dump(void) {
+  bool ha_connected = ha_client_is_connected();
+  bool ha_audio_ready = ha_client_is_audio_ready();
+  int ha_handler_id = ha_client_get_stt_binary_handler_id();
+  bool mqtt_connected = mqtt_ha_is_connected();
+  audio_capture_mode_t mode = audio_capture_get_mode();
+  bool wwd_running = wwd_is_running();
+  bool sd_mounted = (bsp_sdcard != NULL);
+  bool music_inited = local_music_player_is_initialized();
+  music_state_t music_state =
+      music_inited ? local_music_player_get_state() : MUSIC_STATE_IDLE;
+
+  int current_track = -1;
+  int total_tracks = 0;
+  if (music_inited) {
+    current_track = local_music_player_get_current_track();
+    total_tracks = local_music_player_get_total_tracks();
+  }
+
+  ESP_LOGI(TAG, "================ VA DIAG ================");
+  ESP_LOGI(TAG, "HA: connected=%d audio_ready=%d handler_id=%d",
+           (int)ha_connected, (int)ha_audio_ready, ha_handler_id);
+  ESP_LOGI(TAG, "MQTT: connected=%d", (int)mqtt_connected);
+  ESP_LOGI(TAG, "Pipeline: active=%d chunks_sent=%d", (int)pipeline_active,
+           audio_chunks_sent);
+  ESP_LOGI(TAG, "Audio: capture_mode=%d", (int)mode);
+  ESP_LOGI(TAG, "WWD: init=%s running=%d threshold=%.2f",
+           esp_err_to_name(wwd_init_result), (int)wwd_running, wwd_threshold);
+  ESP_LOGI(TAG, "SD: mounted=%d music_inited=%d music_state=%d track=%d/%d",
+           (int)sd_mounted, (int)music_inited, (int)music_state,
+           (current_track >= 0) ? (current_track + 1) : 0, total_tracks);
+  ESP_LOGI(TAG, "Heap: free=%lu", (unsigned long)esp_get_free_heap_size());
+  ESP_LOGI(TAG, "========================================");
+}
+
+static void mqtt_diag_dump_callback(const char *entity_id,
+                                    const char *payload) {
+  ESP_LOGI(TAG, "MQTT: Diagnostics dump requested");
+  va_diag_dump();
+  if (mqtt_ha_is_connected()) {
+    mqtt_ha_update_sensor("va_response", "DIAG dumped to serial log");
   }
 }
 
@@ -985,11 +1047,16 @@ static void mqtt_vad_max_recording_callback(const char *entity_id,
 
 static void mqtt_wwd_threshold_callback(const char *entity_id,
                                         const char *payload) {
-  wwd_threshold = atof(payload);
-  ESP_LOGI(TAG, "MQTT: WWD threshold updated to %.2f", wwd_threshold);
+  float new_threshold = atof(payload);
+  ESP_LOGI(TAG, "MQTT: WWD threshold change requested: %.2f", new_threshold);
 
-  // Don't block inside MQTT event handler; restart happens in audio_cmd_task.
-  audio_post_cmd(AUDIO_CMD_RESTART_WWD);
+  esp_err_t ret = wwd_set_threshold(new_threshold);
+  if (ret == ESP_OK) {
+    wwd_threshold = wwd_get_threshold(); // Get actual clamped value
+    ESP_LOGI(TAG, "WWD threshold updated to %.2f", wwd_threshold);
+  } else {
+    ESP_LOGE(TAG, "Failed to set WWD threshold: %s", esp_err_to_name(ret));
+  }
 
   mqtt_ha_update_number("wwd_threshold", wwd_threshold);
 }
@@ -1203,7 +1270,8 @@ static void tts_playback_complete_handler(void) {
   followup_vad_pending = false;
 
   ESP_LOGI(TAG, "🔄 TTS playback complete - %s",
-           trigger_followup ? "starting follow-up capture" : "resuming wake word detection");
+           trigger_followup ? "starting follow-up capture"
+                            : "resuming wake word detection");
 
   // ═══════════════════════════════════════════════════════════════════
   // >>> NOVO: Publish VA status za CYD display <<<
@@ -1245,7 +1313,8 @@ static void tts_playback_complete_handler(void) {
 // ═══════════════════════════════════════════════════════════════════════════
 // PIPELINE ERROR HANDLER
 // ═══════════════════════════════════════════════════════════════════════════
-static void pipeline_error_handler(const char *error_code, const char *error_message) {
+static void pipeline_error_handler(const char *error_code,
+                                   const char *error_message) {
   ESP_LOGE(TAG, "Pipeline error occurred: %s - %s", error_code, error_message);
 
   followup_vad_pending = false;
@@ -1271,11 +1340,14 @@ static void pipeline_error_handler(const char *error_code, const char *error_mes
 // ═══════════════════════════════════════════════════════════════════════════
 // MUSIC PLAYER EVENT HANDLER
 // ═══════════════════════════════════════════════════════════════════════════
-static void music_player_event_handler(music_state_t state, int current_track, int total_tracks) {
-  ESP_LOGI(TAG, "Music player state changed: %d (track %d/%d)", state, current_track + 1, total_tracks);
+static void music_player_event_handler(music_state_t state, int current_track,
+                                       int total_tracks) {
+  ESP_LOGI(TAG, "Music player state changed: %d (track %d/%d)", state,
+           current_track + 1, total_tracks);
 
   if (state == MUSIC_STATE_PLAYING || state == MUSIC_STATE_PAUSED) {
-    ESP_LOGI(TAG, "Music started - disabling wake word detection to avoid codec conflicts");
+    ESP_LOGI(TAG, "Music started - disabling wake word detection to avoid "
+                  "codec conflicts");
     audio_post_cmd(AUDIO_CMD_STOP_WWD);
   }
 
@@ -1301,14 +1373,16 @@ static void timer_finished_callback(uint8_t timer_id, const char *timer_name) {
     mqtt_ha_update_sensor("timer_finished", timer_name ? timer_name : "");
   }
 
-  // Defer beeps and resume logic to audio command task (avoid blocking timer_mgr task)
+  // Defer beeps and resume logic to audio command task (avoid blocking
+  // timer_mgr task)
   audio_post_cmd(AUDIO_CMD_TIMER_BEEP);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ALARM TRIGGERED CALLBACK
 // ═══════════════════════════════════════════════════════════════════════════
-static void alarm_triggered_callback(uint8_t alarm_id, const char *alarm_label) {
+static void alarm_triggered_callback(uint8_t alarm_id,
+                                     const char *alarm_label) {
   ESP_LOGI(TAG, "⏰ Alarm triggered: %d '%s'", alarm_id, alarm_label);
 
   // Get current time
@@ -1322,14 +1396,16 @@ static void alarm_triggered_callback(uint8_t alarm_id, const char *alarm_label) 
     mqtt_ha_update_sensor("alarm_triggered", alarm_label ? alarm_label : "");
   }
 
-  // Defer beeps and resume logic to audio command task (avoid blocking timer_mgr task)
+  // Defer beeps and resume logic to audio command task (avoid blocking
+  // timer_mgr task)
   audio_post_cmd(AUDIO_CMD_ALARM_BEEP);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INTENT HANDLER (Timer/Alarm Voice Commands)
 // ═══════════════════════════════════════════════════════════════════════════
-static void intent_handler(const char *intent_name, const char *intent_data, const char *conversation_id) {
+static void intent_handler(const char *intent_name, const char *intent_data,
+                           const char *conversation_id) {
   ESP_LOGI(TAG, "🎯 Intent recognized: %s", intent_name);
   ESP_LOGI(TAG, "Intent data: %s", intent_data);
 
@@ -1351,7 +1427,8 @@ static void intent_handler(const char *intent_name, const char *intent_data, con
   cJSON *target = cJSON_GetArrayItem(targets, 0);
 
   // Check for timer-related intents
-  if (strstr(intent_name, "timer") != NULL || strstr(intent_name, "Timer") != NULL) {
+  if (strstr(intent_name, "timer") != NULL ||
+      strstr(intent_name, "Timer") != NULL) {
 
     int duration_sec = 0;
     const char *timer_name = "Voice Timer";
@@ -1385,19 +1462,23 @@ static void intent_handler(const char *intent_name, const char *intent_data, con
           duration_sec = seconds;
         }
         // Try combined format "X minute Y second"
-        else if (sscanf(name->valuestring, "%d minute %d second", &minutes, &seconds) == 2 ||
-                 sscanf(name->valuestring, "%d minuta %d sekund", &minutes, &seconds) == 2) {
+        else if (sscanf(name->valuestring, "%d minute %d second", &minutes,
+                        &seconds) == 2 ||
+                 sscanf(name->valuestring, "%d minuta %d sekund", &minutes,
+                        &seconds) == 2) {
           duration_sec = (minutes * 60) + seconds;
         }
       }
     }
 
     if (duration_sec > 0) {
-      ESP_LOGI(TAG, "Starting timer for %d seconds (%d minutes)", duration_sec, duration_sec / 60);
+      ESP_LOGI(TAG, "Starting timer for %d seconds (%d minutes)", duration_sec,
+               duration_sec / 60);
 
       // Start timer using timer_manager
       uint8_t timer_id;
-      esp_err_t ret = timer_manager_start_timer(timer_name, duration_sec, &timer_id);
+      esp_err_t ret =
+          timer_manager_start_timer(timer_name, duration_sec, &timer_id);
 
       if (ret == ESP_OK) {
         ESP_LOGI(TAG, "✅ Timer %d started successfully", timer_id);
@@ -1407,7 +1488,8 @@ static void intent_handler(const char *intent_name, const char *intent_data, con
         // Update MQTT sensor
         if (mqtt_ha_is_connected()) {
           char timer_info[64];
-          snprintf(timer_info, sizeof(timer_info), "Timer %d: %ds", timer_id, duration_sec);
+          snprintf(timer_info, sizeof(timer_info), "Timer %d: %ds", timer_id,
+                   duration_sec);
           mqtt_ha_update_sensor("timer_status", timer_info);
         }
       } else {
@@ -1420,7 +1502,8 @@ static void intent_handler(const char *intent_name, const char *intent_data, con
     }
   }
   // Check for alarm-related intents
-  else if (strstr(intent_name, "alarm") != NULL || strstr(intent_name, "Alarm") != NULL) {
+  else if (strstr(intent_name, "alarm") != NULL ||
+           strstr(intent_name, "Alarm") != NULL) {
     ESP_LOGI(TAG, "Alarm intent detected (not yet implemented)");
     // TODO: Parse time from intent and create alarm
   }
@@ -1477,7 +1560,8 @@ static void audio_capture_handler(const uint8_t *audio_data, size_t length) {
     return;
   }
 
-  // Abort if HA dropped while recording; avoid getting stuck in a blue/listening state.
+  // Abort if HA dropped while recording; avoid getting stuck in a
+  // blue/listening state.
   if (!ha_client_is_connected()) {
     ESP_LOGW(TAG, "HA disconnected during capture - aborting pipeline");
     pipeline_active = false;
@@ -1533,8 +1617,9 @@ static void audio_capture_handler(const uint8_t *audio_data, size_t length) {
   // If HA is not connected/authenticated, avoid blocking/slowdowns.
   // (Handled above with cleanup; should no longer reach here.)
 
-  // The HA pipeline provides `stt_binary_handler_id` asynchronously (run-start).
-  // Until then, ignore capture chunks without consuming warmup budget or tearing down the pipeline.
+  // The HA pipeline provides `stt_binary_handler_id` asynchronously
+  // (run-start). Until then, ignore capture chunks without consuming warmup
+  // budget or tearing down the pipeline.
   if (!ha_client_is_audio_ready()) {
     return;
   }
@@ -1603,7 +1688,8 @@ static esp_err_t start_audio_streaming(uint32_t max_recording_ms,
     return ESP_ERR_INVALID_STATE;
   }
 
-  uint32_t max_ms = (max_recording_ms > 0) ? max_recording_ms : vad_max_recording;
+  uint32_t max_ms =
+      (max_recording_ms > 0) ? max_recording_ms : vad_max_recording;
 
   ESP_LOGI(TAG, "========================================");
   const char *label = context_tag ? context_tag : "with VAD";
@@ -1639,9 +1725,29 @@ static esp_err_t start_audio_streaming(uint32_t max_recording_ms,
     return ESP_FAIL;
   }
 
-  ESP_LOGI(TAG, "Pipeline started: %s", pipeline_handler);
-  ESP_LOGI(TAG,
-           "🎙️  Start speaking now! (auto-stop after silence or %lums)",
+  // Wait briefly for HA to provide the STT binary handler id
+  // (run-start/result).
+  uint32_t ready_start_ms = esp_log_timestamp();
+  while (!ha_client_is_audio_ready() && ha_client_is_connected() &&
+         (esp_log_timestamp() - ready_start_ms) < 2500) {
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  if (!ha_client_is_audio_ready()) {
+    ESP_LOGE(TAG,
+             "HA pipeline started but audio handler id not ready (timeout)");
+    free(pipeline_handler);
+    pipeline_handler = NULL;
+    audio_capture_disable_vad();
+    led_status_set(LED_STATUS_IDLE);
+    if (mqtt_ha_is_connected()) {
+      mqtt_ha_update_sensor("va_status", "SPREMAN");
+    }
+    return ESP_ERR_TIMEOUT;
+  }
+
+  ESP_LOGI(TAG, "Pipeline started: %s (handler_id=%d)", pipeline_handler,
+           ha_client_get_stt_binary_handler_id());
+  ESP_LOGI(TAG, "🎙️  Start speaking now! (auto-stop after silence or %lums)",
            (unsigned long)vad_config.max_recording_ms);
 
   audio_chunks_sent = 0;
@@ -1679,6 +1785,172 @@ static esp_err_t test_audio_streaming(void) {
     audio_post_cmd(AUDIO_CMD_RESUME_WWD);
   }
   return ret;
+}
+
+static void mqtt_discovery_setup_task(void *arg) {
+  (void)arg;
+
+  ESP_LOGI(TAG, "Waiting for MQTT connection to publish discovery...");
+  while (!mqtt_ha_is_connected()) {
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+
+  ESP_LOGI(TAG, "Registering Home Assistant entities via MQTT Discovery...");
+
+  // Sensors
+  mqtt_ha_register_sensor("network_type", "Network Type", NULL, NULL);
+  mqtt_ha_register_sensor("ip_address", "IP Address", NULL, NULL);
+  mqtt_ha_register_sensor("sd_card_status", "SD Card Status", NULL, NULL);
+  mqtt_ha_register_sensor("wifi_rssi", "WiFi Signal", "dBm", "signal_strength");
+  mqtt_ha_register_sensor("free_memory", "Free Memory", "KB", NULL);
+  mqtt_ha_register_sensor("uptime", "Uptime", "s", "duration");
+
+  // VA Status sensors (CYD display integration)
+  mqtt_ha_register_sensor("va_status", "VA Status", NULL, NULL);
+  mqtt_ha_register_sensor("va_response", "VA Response", NULL, NULL);
+
+  // Switches
+  mqtt_ha_register_switch("wwd_enabled", "Wake Word Detection",
+                          mqtt_wwd_switch_callback);
+  mqtt_ha_register_switch("webserial_enabled", "WebSerial Console",
+                          mqtt_webserial_switch_callback);
+
+  // Sensors - WebSerial
+  mqtt_ha_register_sensor("webserial_clients", "WebSerial Clients", NULL, NULL);
+
+  // Buttons - System
+  mqtt_ha_register_button("restart", "Restart Device", mqtt_restart_callback);
+  mqtt_ha_register_button("test_tts", "Test TTS", mqtt_test_tts_callback);
+  mqtt_ha_register_button("diag_dump", "Diagnostics Dump",
+                          mqtt_diag_dump_callback);
+
+  // Buttons - Music Player
+  mqtt_ha_register_button("music_play", "Play Music", mqtt_music_play_callback);
+  mqtt_ha_register_button("music_stop", "Stop Music", mqtt_music_stop_callback);
+  mqtt_ha_register_button("music_pause", "Pause Music",
+                          mqtt_music_pause_callback);
+  mqtt_ha_register_button("music_resume", "Resume Music",
+                          mqtt_music_resume_callback);
+  mqtt_ha_register_button("music_next", "Next Track", mqtt_music_next_callback);
+  mqtt_ha_register_button("music_previous", "Previous Track",
+                          mqtt_music_previous_callback);
+
+  // Sensors - Music Player
+  mqtt_ha_register_sensor("music_state", "Music State", NULL, NULL);
+  mqtt_ha_register_sensor("current_track", "Current Track", NULL, NULL);
+  mqtt_ha_register_sensor("total_tracks", "Total Tracks", NULL, NULL);
+
+  // Sensors - OTA Update
+  mqtt_ha_register_sensor("firmware_version", "Firmware Version", NULL, NULL);
+  mqtt_ha_register_sensor("ota_status", "OTA Status", NULL, NULL);
+  mqtt_ha_register_sensor("ota_progress", "OTA Progress", "%", NULL);
+  mqtt_ha_register_sensor("ota_url", "OTA Update URL", NULL, NULL);
+
+  // Text input for OTA URL
+  mqtt_ha_register_text("ota_url_input", "OTA URL Input",
+                        mqtt_ota_url_callback);
+
+  // Button to trigger OTA update
+  mqtt_ha_register_button("ota_trigger", "Trigger OTA Update",
+                          mqtt_ota_trigger_callback);
+
+  // Number controls for VAD tuning
+  mqtt_ha_register_number("vad_threshold", "VAD Speech Threshold", 50, 300, 10,
+                          NULL, mqtt_vad_threshold_callback);
+  mqtt_ha_register_number("vad_silence_duration", "VAD Silence Duration", 1000,
+                          3000, 100, "ms", mqtt_vad_silence_callback);
+  mqtt_ha_register_number("vad_min_speech", "VAD Min Speech Duration", 100, 500,
+                          50, "ms", mqtt_vad_min_speech_callback);
+  mqtt_ha_register_number("vad_max_recording", "VAD Max Recording Duration",
+                          5000, 10000, 500, "ms",
+                          mqtt_vad_max_recording_callback);
+
+  // Number control for WWD tuning
+  mqtt_ha_register_number("wwd_threshold", "WWD Detection Threshold", 0.5, 0.95,
+                          0.05, NULL, mqtt_wwd_threshold_callback);
+
+  // AGC Controls
+  mqtt_ha_register_switch("agc_enabled", "Auto Gain Control",
+                          mqtt_agc_switch_callback);
+  mqtt_ha_register_number("agc_target_level", "AGC Target Level", 1000, 8000,
+                          500, NULL, mqtt_agc_target_callback);
+  mqtt_ha_register_sensor("agc_current_gain", "AGC Current Gain", "x", NULL);
+
+  // LED Status Controls
+  mqtt_ha_register_switch("led_enabled", "LED Status Indicator",
+                          mqtt_led_switch_callback);
+  mqtt_ha_register_number("led_brightness", "LED Brightness", 0, 100, 10, "%",
+                          mqtt_led_brightness_callback);
+
+  ESP_LOGI(TAG,
+           "Home Assistant entities registered (17 sensors, 4 switches, 10 "
+           "buttons, 7 numbers)");
+
+  // Initial VA status.
+  if (ha_client_is_connected()) {
+    mqtt_ha_update_sensor("va_status", "SPREMAN");
+    mqtt_ha_update_sensor("va_response", "Voice Assistant spreman!");
+  } else {
+    mqtt_ha_update_sensor("va_status", "BOOT");
+    mqtt_ha_update_sensor("va_response", "MQTT ready; waiting for HA...");
+  }
+
+  // Initialize AGC if enabled by default
+  if (agc_enabled) {
+    esp_err_t agc_ret = audio_capture_enable_agc(agc_target_level);
+    if (agc_ret == ESP_OK) {
+      ESP_LOGI(TAG, "AGC enabled with target level: %u", agc_target_level);
+      mqtt_ha_update_switch("agc_enabled", true);
+    } else {
+      ESP_LOGW(TAG, "Failed to enable AGC");
+      agc_enabled = false;
+      mqtt_ha_update_switch("agc_enabled", false);
+    }
+  }
+  mqtt_ha_update_number("agc_target_level", (float)agc_target_level);
+
+  // Initialize LED status entity state
+  mqtt_ha_update_switch("led_enabled", led_status_is_enabled());
+  mqtt_ha_update_number("led_brightness", (float)led_status_get_brightness());
+  ESP_LOGI(TAG, "LED status initialized: %s, brightness: %u%%",
+           led_status_is_enabled() ? "ON" : "OFF", led_status_get_brightness());
+
+  xTaskCreate(mqtt_status_update_task, "mqtt_status", 4096, NULL, 3, NULL);
+  ESP_LOGI(TAG, "MQTT status update task started");
+
+  vTaskDelete(NULL);
+}
+
+static esp_err_t init_mqtt_home_assistant_discovery(void) {
+  ESP_LOGI(TAG, "Initializing MQTT Home Assistant Discovery...");
+
+  mqtt_ha_config_t mqtt_config = {.broker_uri = MQTT_BROKER_URI,
+                                  .username = MQTT_USERNAME,
+                                  .password = MQTT_PASSWORD,
+                                  .client_id = MQTT_CLIENT_ID};
+
+  esp_err_t ret = mqtt_ha_init(&mqtt_config);
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to initialize MQTT client");
+    return ret;
+  }
+  ESP_LOGI(TAG, "MQTT client initialized");
+
+  ret = mqtt_ha_start();
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to start MQTT client");
+    return ret;
+  }
+  ESP_LOGI(TAG, "MQTT client started");
+
+  BaseType_t task_ret = xTaskCreate(mqtt_discovery_setup_task, "mqtt_discovery",
+                                    6144, NULL, 3, NULL);
+  if (task_ret != pdPASS) {
+    ESP_LOGW(TAG, "Failed to create MQTT discovery setup task");
+    return ESP_FAIL;
+  }
+
+  return ESP_OK;
 }
 
 void app_main(void) {
@@ -1747,9 +2019,8 @@ void app_main(void) {
     audio_cmd_queue = xQueueCreate(8, sizeof(audio_cmd_t));
   }
   if (audio_cmd_queue != NULL && audio_cmd_task_handle == NULL) {
-    BaseType_t task_ret =
-        xTaskCreate(audio_cmd_task, "audio_cmd", 4096, NULL, 6,
-                    &audio_cmd_task_handle);
+    BaseType_t task_ret = xTaskCreate(audio_cmd_task, "audio_cmd", 4096, NULL,
+                                      6, &audio_cmd_task_handle);
     if (task_ret != pdPASS) {
       ESP_LOGW(TAG, "Failed to create audio command task");
       audio_cmd_task_handle = NULL;
@@ -1801,6 +2072,14 @@ void app_main(void) {
     }
     // ═══════════════════════════════════════════════════════════════════════
 
+    // Bring up MQTT independently of Home Assistant WebSocket; this keeps OTA
+    // and device controls available even if HA is behind a reverse proxy.
+    ret = init_mqtt_home_assistant_discovery();
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "MQTT Discovery init failed: %s", esp_err_to_name(ret));
+      (void)connection_manager_request_reconnect(CONN_TYPE_MQTT);
+    }
+
     ESP_LOGI(TAG, "Connecting to Home Assistant...");
     ret = ha_client_init();
     if (ret == ESP_OK) {
@@ -1818,15 +2097,15 @@ void app_main(void) {
       ESP_LOGI(TAG, "Initializing Timer/Alarm Manager...");
 
       // Initialize SNTP for time synchronization
-      timer_manager_init_sntp("CET-1CEST,M3.5.0,M10.5.0/3"); // Central European Time
+      timer_manager_init_sntp(
+          "CET-1CEST,M3.5.0,M10.5.0/3"); // Central European Time
 
       timer_manager_config_t timer_config = {
-        .timer_finished_callback = timer_finished_callback,
-        .alarm_triggered_callback = alarm_triggered_callback,
-        .snooze_duration_sec = 600, // 10 minutes
-        .tts_notifications = true,
-        .play_sound = true
-      };
+          .timer_finished_callback = timer_finished_callback,
+          .alarm_triggered_callback = alarm_triggered_callback,
+          .snooze_duration_sec = 600, // 10 minutes
+          .tts_notifications = true,
+          .play_sound = true};
 
       ret = timer_manager_init(&timer_config);
       if (ret == ESP_OK) {
@@ -1836,6 +2115,8 @@ void app_main(void) {
       }
       // ═══════════════════════════════════════════════════════════════════════
 
+      // MQTT Discovery is initialized earlier (independent of HA WebSocket).
+#if 0
       ESP_LOGI(TAG, "Initializing MQTT Home Assistant Discovery...");
       mqtt_ha_config_t mqtt_config = {.broker_uri = MQTT_BROKER_URI,
                                       .username = MQTT_USERNAME,
@@ -1936,7 +2217,7 @@ void app_main(void) {
 
           // Number control for WWD tuning
           mqtt_ha_register_number("wwd_threshold", "WWD Detection Threshold",
-                                  0.3, 0.9, 0.05, NULL,
+                                  0.5, 0.95, 0.05, NULL,
                                   mqtt_wwd_threshold_callback);
 
           // ═══════════════════════════════════════════════════════════════════
@@ -2007,6 +2288,13 @@ void app_main(void) {
         ESP_LOGW(TAG, "Failed to initialize MQTT client");
       }
 
+#endif
+
+      if (mqtt_ha_is_connected()) {
+        mqtt_ha_update_sensor("va_status", "SPREMAN");
+        mqtt_ha_update_sensor("va_response", "Voice Assistant spreman!");
+      }
+
       ESP_LOGI(TAG, "All systems initialized - marking OTA partition as valid");
       ota_update_mark_valid();
 
@@ -2034,6 +2322,11 @@ void app_main(void) {
       }
     } else {
       ESP_LOGW(TAG, "Home Assistant connection failed");
+      if (mqtt_ha_is_connected()) {
+        mqtt_ha_update_sensor("va_status", "HA OFFLINE");
+        mqtt_ha_update_sensor("va_response", "HA WS not connected; MQTT OK");
+      }
+      (void)connection_manager_request_reconnect(CONN_TYPE_HA_WEBSOCKET);
     }
   } else {
     ESP_LOGW(TAG, "WiFi connection failed, continuing without network");

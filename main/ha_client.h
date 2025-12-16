@@ -44,6 +44,11 @@ bool ha_client_is_connected(void);
 bool ha_client_is_audio_ready(void);
 
 /**
+ * @brief Get the current STT binary handler id (or -1 if not ready).
+ */
+int ha_client_get_stt_binary_handler_id(void);
+
+/**
  * @brief Send text to Home Assistant Assist Pipeline
  *
  * @param text Text to process (voice transcription)

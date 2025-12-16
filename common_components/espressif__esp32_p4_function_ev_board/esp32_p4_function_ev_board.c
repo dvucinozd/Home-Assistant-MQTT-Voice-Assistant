@@ -247,6 +247,16 @@ esp_err_t bsp_audio_init(const i2s_std_config_t *i2s_config)
     return ESP_OK;
 }
 
+i2s_chan_handle_t bsp_audio_get_tx_chan(void)
+{
+    return i2s_tx_chan;
+}
+
+i2s_chan_handle_t bsp_audio_get_rx_chan(void)
+{
+    return i2s_rx_chan;
+}
+
 esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
 {
     if (i2s_data_if == NULL) {

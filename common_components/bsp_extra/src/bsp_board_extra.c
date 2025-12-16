@@ -91,18 +91,52 @@ static void audio_callback(audio_player_cb_ctx_t *ctx)
 
 esp_err_t bsp_extra_i2s_read(void *audio_buffer, size_t len, size_t *bytes_read, uint32_t timeout_ms)
 {
-    esp_err_t ret = ESP_OK;
-    ret = esp_codec_dev_read(record_dev_handle, audio_buffer, len);
-    *bytes_read = len;
-    return ret;
+    if (bytes_read == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *bytes_read = 0;
+
+    if (audio_buffer == NULL || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Ensure the record codec path is opened; otherwise reads can block or fail.
+    if (record_dev_handle == NULL || !record_dev_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    i2s_chan_handle_t rx = bsp_audio_get_rx_chan();
+    if (rx == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    TickType_t ticks = (timeout_ms == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return i2s_channel_read(rx, audio_buffer, len, bytes_read, ticks);
 }
 
 esp_err_t bsp_extra_i2s_write(void *audio_buffer, size_t len, size_t *bytes_written, uint32_t timeout_ms)
 {
-    esp_err_t ret = ESP_OK;
-    ret = esp_codec_dev_write(play_dev_handle, audio_buffer, len);
-    *bytes_written = len;
-    return ret;
+    if (bytes_written == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *bytes_written = 0;
+
+    if (audio_buffer == NULL || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Ensure the playback codec path is opened; otherwise writes can block or fail.
+    if (play_dev_handle == NULL || !play_dev_open) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    i2s_chan_handle_t tx = bsp_audio_get_tx_chan();
+    if (tx == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    TickType_t ticks = (timeout_ms == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return i2s_channel_write(tx, audio_buffer, len, bytes_written, ticks);
 }
 
 esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch)

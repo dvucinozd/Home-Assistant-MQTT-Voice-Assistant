@@ -16,12 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-
+#include "audio_capture.h"
 #include "config.h"
 #include "connection_manager.h"
-#include "audio_capture.h"
 #include "ha_client.h"
-
 
 static const char *TAG = "ha_client";
 
@@ -44,8 +42,11 @@ static ha_intent_callback_t intent_callback = NULL;
 
 // STT binary handler ID (received from run-start event)
 static int stt_binary_handler_id = -1;
+static int last_run_message_id = -1;
+static uint32_t last_run_start_ts_ms = 0;
 
-// Flag to track if a timer was successfully started (to skip negative HA response)
+// Flag to track if a timer was successfully started (to skip negative HA
+// response)
 static bool timer_started_this_conversation = false;
 
 // Reusable buffer for binary audio frames (avoid per-chunk malloc/free jitter)
@@ -56,17 +57,94 @@ static size_t audio_frame_buf_cap = 0;
 static EventGroupHandle_t ha_event_group;
 #define HA_CONNECTED_BIT BIT0
 #define HA_AUTHENTICATED_BIT BIT1
+#define HA_AUDIO_READY_BIT BIT2
 
-// Avoid blocking event loop / audio capture tasks indefinitely on socket writes.
+// Avoid blocking event loop / audio capture tasks indefinitely on socket
+// writes.
 #define HA_SEND_TEXT_TIMEOUT_MS 2000
-// Slightly longer timeout for binary audio writes to reduce ws-client lock contention
-// while streaming STT audio frames.
-// On lossy WiFi links HA can apply TCP backpressure; allow more time before treating
-// a write as failed (prevents frequent transport_poll_write(0) disconnects).
+// Slightly longer timeout for binary audio writes to reduce ws-client lock
+// contention while streaming STT audio frames. On lossy WiFi links HA can apply
+// TCP backpressure; allow more time before treating a write as failed (prevents
+// frequent transport_poll_write(0) disconnects).
 #define HA_SEND_AUDIO_TIMEOUT_MS 2000
 
 // Forward declarations
 static void download_tts_audio(const char *url);
+static bool ha_find_stt_handler_id(const cJSON *node, int depth, int *out_id);
+static void ha_clear_audio_ready(void);
+static void ha_set_audio_ready(int handler_id, const char *source);
+
+static bool ha_parse_int_item(const cJSON *item, int *out_id) {
+  if (item == NULL || out_id == NULL) {
+    return false;
+  }
+
+  if (cJSON_IsNumber(item)) {
+    *out_id = item->valueint;
+    return true;
+  }
+
+  if (cJSON_IsString(item) && item->valuestring) {
+    char *end = NULL;
+    long v = strtol(item->valuestring, &end, 10);
+    if (end != item->valuestring) {
+      *out_id = (int)v;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static bool ha_find_stt_handler_id(const cJSON *node, int depth, int *out_id) {
+  if (node == NULL || out_id == NULL || depth <= 0) {
+    return false;
+  }
+
+  if (cJSON_IsObject(node)) {
+    for (const cJSON *child = node->child; child != NULL; child = child->next) {
+      if (child->string &&
+          strcmp(child->string, "stt_binary_handler_id") == 0) {
+        if (ha_parse_int_item(child, out_id)) {
+          return true;
+        }
+      }
+      if (ha_find_stt_handler_id(child, depth - 1, out_id)) {
+        return true;
+      }
+    }
+  } else if (cJSON_IsArray(node)) {
+    for (const cJSON *child = node->child; child != NULL; child = child->next) {
+      if (ha_find_stt_handler_id(child, depth - 1, out_id)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+static void ha_clear_audio_ready(void) {
+  stt_binary_handler_id = -1;
+  if (ha_event_group) {
+    xEventGroupClearBits(ha_event_group, HA_AUDIO_READY_BIT);
+  }
+}
+
+static void ha_set_audio_ready(int handler_id, const char *source) {
+  if (handler_id < 0 || handler_id > 255) {
+    ESP_LOGE(TAG, "Invalid stt_binary_handler_id=%d (%s)", handler_id,
+             source ? source : "unknown");
+    return;
+  }
+
+  stt_binary_handler_id = handler_id;
+  if (ha_event_group) {
+    xEventGroupSetBits(ha_event_group, HA_AUDIO_READY_BIT);
+  }
+  ESP_LOGI(TAG, "STT binary handler ID: %d (%s)", stt_binary_handler_id,
+           source ? source : "unknown");
+}
 
 /**
  * Resolve mDNS hostname to IP address
@@ -112,8 +190,9 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     char auth_msg[512];
     snprintf(auth_msg, sizeof(auth_msg),
              "{\"type\":\"auth\",\"access_token\":\"%s\"}", HA_TOKEN);
-    int auth_ret = esp_websocket_client_send_text(
-        ws_client, auth_msg, strlen(auth_msg), pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
+    int auth_ret =
+        esp_websocket_client_send_text(ws_client, auth_msg, strlen(auth_msg),
+                                       pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
     if (auth_ret < 0) {
       ESP_LOGE(TAG, "Failed to send authentication token");
     } else {
@@ -125,9 +204,10 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     ESP_LOGW(TAG, "WebSocket disconnected from Home Assistant");
     ws_connected = false;
     ws_authenticated = false;
-    stt_binary_handler_id = -1;
-    xEventGroupClearBits(ha_event_group,
-                         HA_CONNECTED_BIT | HA_AUTHENTICATED_BIT);
+    ha_clear_audio_ready();
+    xEventGroupClearBits(ha_event_group, HA_CONNECTED_BIT |
+                                             HA_AUTHENTICATED_BIT |
+                                             HA_AUDIO_READY_BIT);
     connection_manager_update_state(CONN_TYPE_HA_WEBSOCKET,
                                     CONN_STATE_DISCONNECTED);
     break;
@@ -139,7 +219,8 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
       break;
     }
 
-    // Ignore control frames / keepalives (prevents log spam with empty payloads).
+    // Ignore control frames / keepalives (prevents log spam with empty
+    // payloads).
     if (data->op_code == 0x09 || data->op_code == 0x0A) {
       ESP_LOGD(TAG, "Received WS control frame opcode=0x%02x len=%d",
                (unsigned)data->op_code, (int)data->data_len);
@@ -187,19 +268,14 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
               // Reset timer flag for new conversation
               timer_started_this_conversation = false;
 
-              // Extract STT binary handler ID for audio streaming
-              if (data_obj) {
-                cJSON *runner_data =
-                    cJSON_GetObjectItem(data_obj, "runner_data");
-                if (runner_data) {
-                  cJSON *stt_handler =
-                      cJSON_GetObjectItem(runner_data, "stt_binary_handler_id");
-                  if (stt_handler && cJSON_IsNumber(stt_handler)) {
-                    stt_binary_handler_id = stt_handler->valueint;
-                    ESP_LOGI(TAG, "STT binary handler ID: %d",
-                             stt_binary_handler_id);
-                  }
-                }
+              int handler_id = -1;
+              if (data_obj &&
+                  ha_find_stt_handler_id(data_obj, 6, &handler_id)) {
+                ha_set_audio_ready(handler_id, "run-start");
+              } else {
+                ESP_LOGW(
+                    TAG,
+                    "run-start received but stt_binary_handler_id not found");
               }
             } else if (strcmp(event_type->valuestring, "stt-start") == 0) {
               ESP_LOGI(TAG, "Speech-to-Text started");
@@ -217,10 +293,12 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                       char transcript_lower[256];
 
                       // Convert to lowercase for matching
-                      strncpy(transcript_lower, transcript, sizeof(transcript_lower) - 1);
+                      strncpy(transcript_lower, transcript,
+                              sizeof(transcript_lower) - 1);
                       transcript_lower[sizeof(transcript_lower) - 1] = '\0';
                       for (int i = 0; transcript_lower[i]; i++) {
-                        transcript_lower[i] = tolower((unsigned char)transcript_lower[i]);
+                        transcript_lower[i] =
+                            tolower((unsigned char)transcript_lower[i]);
                       }
 
                       // Check for timer keywords (Latin + Cyrillic)
@@ -234,21 +312,24 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
 
                         // Helper: Parse Croatian text numbers (1-60)
                         const char *text_numbers[] = {
-                          "jedan", "jedna", "jednu", "dva", "dvije", "tri", "četiri", "pet",
-                          "šest", "sedam", "osam", "devet", "deset",
-                          "jedanaest", "dvanaest", "trinaest", "četrnaest", "petnaest",
-                          "šesnaest", "sedamnaest", "osamnaest", "devetnaest", "dvadeset",
-                          "trideset", "četrdeset", "pedeset", "šezdeset"
-                        };
-                        const int text_values[] = {
-                          1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-                          11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 30, 40, 50, 60
-                        };
+                            "jedan",     "jedna",      "jednu",    "dva",
+                            "dvije",     "tri",        "četiri",   "pet",
+                            "šest",      "sedam",      "osam",     "devet",
+                            "deset",     "jedanaest",  "dvanaest", "trinaest",
+                            "četrnaest", "petnaest",   "šesnaest", "sedamnaest",
+                            "osamnaest", "devetnaest", "dvadeset", "trideset",
+                            "četrdeset", "pedeset",    "šezdeset"};
+                        const int text_values[] = {1,  1,  1,  2,  2,  3,  4,
+                                                   5,  6,  7,  8,  9,  10, 11,
+                                                   12, 13, 14, 15, 16, 17, 18,
+                                                   19, 20, 30, 40, 50, 60};
 
                         // Try to parse different timer formats
                         // First check for text-based seconds
                         if (strstr(transcript_lower, "sekund")) {
-                          for (int i = 0; i < sizeof(text_values)/sizeof(text_values[0]); i++) {
+                          for (int i = 0;
+                               i < sizeof(text_values) / sizeof(text_values[0]);
+                               i++) {
                             if (strstr(transcript_lower, text_numbers[i])) {
                               duration_sec = text_values[i];
                               timer_found = true;
@@ -256,9 +337,13 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                             }
                           }
                         }
-                        // Then check for text-based minutes (only if seconds not found)
-                        if (!timer_found && (strstr(transcript_lower, "minut"))) {
-                          for (int i = 0; i < sizeof(text_values)/sizeof(text_values[0]); i++) {
+                        // Then check for text-based minutes (only if seconds
+                        // not found)
+                        if (!timer_found &&
+                            (strstr(transcript_lower, "minut"))) {
+                          for (int i = 0;
+                               i < sizeof(text_values) / sizeof(text_values[0]);
+                               i++) {
                             if (strstr(transcript_lower, text_numbers[i])) {
                               duration_min = text_values[i];
                               timer_found = true;
@@ -267,10 +352,14 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                           }
                         }
 
-                        // Fallback to numeric parsing if text-based parsing failed
-                        // Check for numeric formats - try seconds FIRST (more specific)
-                        if (!timer_found && (strstr(transcript_lower, "sekund") || strstr(transcript, "секунд"))) {
-                          // Format: "X sekundi/sekunda/sekunde" (Latin or Cyrillic)
+                        // Fallback to numeric parsing if text-based parsing
+                        // failed Check for numeric formats - try seconds FIRST
+                        // (more specific)
+                        if (!timer_found &&
+                            (strstr(transcript_lower, "sekund") ||
+                             strstr(transcript, "секунд"))) {
+                          // Format: "X sekundi/sekunda/sekunde" (Latin or
+                          // Cyrillic)
                           int num = 0;
                           if (sscanf(transcript, "%*s %*s %*s %d", &num) == 1 ||
                               sscanf(transcript, "%*s %*s %d", &num) == 1) {
@@ -279,8 +368,11 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                           }
                         }
                         // Then try minutes
-                        if (!timer_found && (strstr(transcript_lower, "minut") || strstr(transcript, "минут"))) {
-                          // Format: "X minuta/minute/minuti" (Latin or Cyrillic)
+                        if (!timer_found &&
+                            (strstr(transcript_lower, "minut") ||
+                             strstr(transcript, "минут"))) {
+                          // Format: "X minuta/minute/minuti" (Latin or
+                          // Cyrillic)
                           int num = 0;
                           if (sscanf(transcript, "%*s %*s %*s %d", &num) == 1 ||
                               sscanf(transcript, "%*s %*s %d", &num) == 1) {
@@ -290,27 +382,36 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                         }
 
                         if (timer_found) {
-                          int total_seconds = (duration_min * 60) + duration_sec;
+                          int total_seconds =
+                              (duration_min * 60) + duration_sec;
                           if (total_seconds > 0) {
                             // Create synthetic intent data with proper name
                             char intent_data[256];
                             char timer_name[64];
                             if (duration_min > 0 && duration_sec > 0) {
-                              snprintf(timer_name, sizeof(timer_name), "%dm %ds timer", duration_min, duration_sec);
+                              snprintf(timer_name, sizeof(timer_name),
+                                       "%dm %ds timer", duration_min,
+                                       duration_sec);
                             } else if (duration_min > 0) {
-                              snprintf(timer_name, sizeof(timer_name), "%d minute timer", duration_min);
+                              snprintf(timer_name, sizeof(timer_name),
+                                       "%d minute timer", duration_min);
                             } else {
-                              snprintf(timer_name, sizeof(timer_name), "%d second timer", duration_sec);
+                              snprintf(timer_name, sizeof(timer_name),
+                                       "%d second timer", duration_sec);
                             }
 
                             snprintf(intent_data, sizeof(intent_data),
-                                   "{\"targets\":[{\"type\":\"timer\",\"name\":\"%s\",\"duration\":%d}]}",
-                                   timer_name, total_seconds);
+                                     "{\"targets\":[{\"type\":\"timer\","
+                                     "\"name\":\"%s\",\"duration\":%d}]}",
+                                     timer_name, total_seconds);
 
-                            ESP_LOGI(TAG, "🎯 Detected timer command: %d seconds", total_seconds);
+                            ESP_LOGI(TAG,
+                                     "🎯 Detected timer command: %d seconds",
+                                     total_seconds);
                             intent_callback("timer", intent_data, NULL);
 
-                            // Mark that timer was started to skip negative HA TTS
+                            // Mark that timer was started to skip negative HA
+                            // TTS
                             timer_started_this_conversation = true;
                           }
                         }
@@ -330,18 +431,53 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                       cJSON_GetObjectItem(intent_output, "conversation_id");
 
                   // Extract intent response data
-                  cJSON *response = cJSON_GetObjectItem(intent_output, "response");
+                  cJSON *response =
+                      cJSON_GetObjectItem(intent_output, "response");
                   if (response) {
-                    cJSON *response_type = cJSON_GetObjectItem(response, "response_type");
+                    // ══════════════════════════════════════════════════════
+                    // Extract speech text for CYD display (va_response sensor)
+                    // Path: response.speech.plain.speech
+                    // ══════════════════════════════════════════════════════
+                    cJSON *speech = cJSON_GetObjectItem(response, "speech");
+                    if (speech) {
+                      cJSON *plain = cJSON_GetObjectItem(speech, "plain");
+                      if (plain) {
+                        cJSON *speech_text =
+                            cJSON_GetObjectItem(plain, "speech");
+                        if (speech_text && speech_text->valuestring &&
+                            strlen(speech_text->valuestring) > 0) {
+                          ESP_LOGI(TAG, "Intent speech: '%s'",
+                                   speech_text->valuestring);
+
+                          // Call conversation callback to update va_response
+                          // sensor
+                          const char *conv_id_str =
+                              (conversation_id && conversation_id->valuestring)
+                                  ? conversation_id->valuestring
+                                  : NULL;
+                          if (conversation_callback) {
+                            conversation_callback(speech_text->valuestring,
+                                                  conv_id_str);
+                          }
+                        }
+                      }
+                    }
+
+                    cJSON *response_type =
+                        cJSON_GetObjectItem(response, "response_type");
                     cJSON *data = cJSON_GetObjectItem(response, "data");
 
-                    // Check for action_done response (successful intent execution)
+                    // Check for action_done response (successful intent
+                    // execution)
                     if (response_type && response_type->valuestring &&
-                        strcmp(response_type->valuestring, "action_done") == 0 && data) {
+                        strcmp(response_type->valuestring, "action_done") ==
+                            0 &&
+                        data) {
 
                       // Extract intent name from targets
                       cJSON *targets = cJSON_GetObjectItem(data, "targets");
-                      if (targets && cJSON_IsArray(targets) && cJSON_GetArraySize(targets) > 0) {
+                      if (targets && cJSON_IsArray(targets) &&
+                          cJSON_GetArraySize(targets) > 0) {
                         cJSON *target = cJSON_GetArrayItem(targets, 0);
                         cJSON *type = cJSON_GetObjectItem(target, "type");
 
@@ -352,10 +488,12 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                           if (intent_callback) {
                             char *data_str = cJSON_PrintUnformatted(data);
                             if (data_str) {
-                              intent_callback(type->valuestring, data_str,
-                                            conversation_id && conversation_id->valuestring
-                                                ? conversation_id->valuestring
-                                                : NULL);
+                              intent_callback(
+                                  type->valuestring, data_str,
+                                  conversation_id &&
+                                          conversation_id->valuestring
+                                      ? conversation_id->valuestring
+                                      : NULL);
                               cJSON_free(data_str);
                             }
                           }
@@ -372,14 +510,33 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
               }
             } else if (strcmp(event_type->valuestring, "tts-start") == 0) {
               ESP_LOGI(TAG, "Text-to-Speech started");
+              // Set LED to SPEAKING (cyan pulsing) when TTS begins
+              extern void led_status_set(int status);
+              led_status_set(5); // LED_STATUS_SPEAKING = 5
             } else if (strcmp(event_type->valuestring, "tts-end") == 0) {
-              // Skip TTS if timer was successfully started (avoid "cannot set timer" message)
+              // Skip TTS if timer was successfully started (avoid "cannot set
+              // timer" message)
               if (timer_started_this_conversation) {
-                ESP_LOGI(TAG, "Skipping HA TTS (timer already started with confirmation beep)");
+                ESP_LOGI(TAG, "Skipping HA TTS (timer already started with "
+                              "confirmation beep)");
               } else if (data_obj) {
                 cJSON *tts_output = cJSON_GetObjectItem(data_obj, "tts_output");
                 if (tts_output) {
-                  // Get TTS URL for downloading audio
+                  // Get text for conversation callback FIRST (sets LED before
+                  // download)
+                  cJSON *text = cJSON_GetObjectItem(tts_output, "text");
+                  if (text && text->valuestring) {
+                    ESP_LOGI(TAG, "TTS Response: '%s'", text->valuestring);
+
+                    // Call conversation callback BEFORE download to set LED
+                    // status
+                    if (conversation_callback) {
+                      conversation_callback(text->valuestring, NULL);
+                    }
+                  }
+
+                  // Now get TTS URL and download audio (LED is already
+                  // SPEAKING)
                   cJSON *url = cJSON_GetObjectItem(tts_output, "url");
                   if (url && url->valuestring) {
                     ESP_LOGI(TAG, "TTS URL: %s", url->valuestring);
@@ -387,44 +544,37 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
                     // Download TTS audio file
                     download_tts_audio(url->valuestring);
                   }
-
-                  // Also get text for conversation callback
-                  cJSON *text = cJSON_GetObjectItem(tts_output, "text");
-                  if (text && text->valuestring) {
-                    ESP_LOGI(TAG, "TTS Response: '%s'", text->valuestring);
-
-                    // Call conversation callback with TTS text
-                    if (conversation_callback) {
-                      conversation_callback(text->valuestring, NULL);
-                    }
-                  }
                 }
               }
             } else if (strcmp(event_type->valuestring, "run-end") == 0) {
               ESP_LOGI(TAG, "Pipeline completed");
 
-              // If timer was started and TTS was skipped, signal completion to resume wake word
+              // If timer was started and TTS was skipped, signal completion to
+              // resume wake word
               if (timer_started_this_conversation && conversation_callback) {
                 ESP_LOGI(TAG, "Signaling pipeline completion (timer path)");
-                conversation_callback("", NULL); // Empty string signals timer completion
+                conversation_callback(
+                    "", NULL); // Empty string signals timer completion
               }
 
               // Reset handler ID for next run
-              stt_binary_handler_id = -1;
+              ha_clear_audio_ready();
             } else if (strcmp(event_type->valuestring, "error") == 0) {
               cJSON *code = cJSON_GetObjectItem(data_obj, "code");
               cJSON *message = cJSON_GetObjectItem(data_obj, "message");
-              const char *error_code = code && code->valuestring ? code->valuestring : "unknown";
-              const char *error_msg = message && message->valuestring ? message->valuestring : "";
+              const char *error_code =
+                  code && code->valuestring ? code->valuestring : "unknown";
+              const char *error_msg =
+                  message && message->valuestring ? message->valuestring : "";
 
               ESP_LOGE(TAG, "Pipeline error: %s - %s", error_code, error_msg);
 
-               // Stop audio capture on pipeline error
-               (void)audio_capture_stop_wait(500);
-               ESP_LOGI(TAG, "Audio capture stopped due to pipeline error");
+              // Stop audio capture on pipeline error
+              (void)audio_capture_stop_wait(500);
+              ESP_LOGI(TAG, "Audio capture stopped due to pipeline error");
 
               // Reset handler ID
-              stt_binary_handler_id = -1;
+              ha_clear_audio_ready();
 
               // Call error callback if registered
               if (error_callback) {
@@ -434,12 +584,24 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
           }
         }
       } else if (type && strcmp(type->valuestring, "result") == 0) {
+        cJSON *msg_id = cJSON_GetObjectItem(json, "id");
         cJSON *success = cJSON_GetObjectItem(json, "success");
         if (success && cJSON_IsTrue(success)) {
           ESP_LOGI(TAG, "Command executed successfully");
 
           // Check for conversation response
           cJSON *result = cJSON_GetObjectItem(json, "result");
+          if (msg_id && cJSON_IsNumber(msg_id) && result &&
+              (int)msg_id->valuedouble == last_run_message_id &&
+              !ha_client_is_audio_ready()) {
+            int handler_id = -1;
+            if (ha_find_stt_handler_id(result, 6, &handler_id)) {
+              uint32_t elapsed = esp_log_timestamp() - last_run_start_ts_ms;
+              ESP_LOGI(TAG, "Audio handler id arrived via result after %lums",
+                       (unsigned long)elapsed);
+              ha_set_audio_ready(handler_id, "result");
+            }
+          }
           if (result) {
             cJSON *response = cJSON_GetObjectItem(result, "response");
             if (response) {
@@ -473,6 +635,13 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
 
   case WEBSOCKET_EVENT_ERROR:
     ESP_LOGE(TAG, "WebSocket error");
+    ws_connected = false;
+    ws_authenticated = false;
+    ha_clear_audio_ready();
+    xEventGroupClearBits(ha_event_group, HA_CONNECTED_BIT |
+                                             HA_AUTHENTICATED_BIT |
+                                             HA_AUDIO_READY_BIT);
+    connection_manager_update_state(CONN_TYPE_HA_WEBSOCKET, CONN_STATE_ERROR);
     break;
 
   default:
@@ -589,7 +758,8 @@ static esp_err_t init_mdns(void) {
 esp_err_t ha_client_init(void) {
   ESP_LOGI(TAG, "Initializing Home Assistant client...");
 
-  // Clean up any previous instance (connection_manager may call init multiple times).
+  // Clean up any previous instance (connection_manager may call init multiple
+  // times).
   ha_client_stop();
 
   ha_event_group = xEventGroupCreate();
@@ -688,6 +858,8 @@ bool ha_client_is_audio_ready(void) {
   return ha_client_is_connected() && stt_binary_handler_id >= 0;
 }
 
+int ha_client_get_stt_binary_handler_id(void) { return stt_binary_handler_id; }
+
 esp_err_t ha_client_send_text(const char *text) {
   if (!ha_client_is_connected()) {
     ESP_LOGW(TAG, "Not connected to Home Assistant");
@@ -707,14 +879,15 @@ esp_err_t ha_client_send_text(const char *text) {
   }
 
   ESP_LOGI(TAG, "Sending to HA: %s", json_str);
-  int ret = esp_websocket_client_send_text(ws_client, json_str,
-                                           strlen(json_str),
-                                           pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
+  int ret =
+      esp_websocket_client_send_text(ws_client, json_str, strlen(json_str),
+                                     pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
 
   free(json_str);
   cJSON_Delete(root);
 
-  // Note: esp_websocket_client_send_* may return 0 on timeout; treat as failure.
+  // Note: esp_websocket_client_send_* may return 0 on timeout; treat as
+  // failure.
   return (ret > 0) ? ESP_OK : ESP_FAIL;
 }
 
@@ -725,11 +898,13 @@ char *ha_client_start_conversation(void) {
   }
 
   // Ensure we don't accidentally reuse a stale handler id from a previous run.
-  stt_binary_handler_id = -1;
+  ha_clear_audio_ready();
 
   // Start Assist Pipeline with audio input
   cJSON *root = cJSON_CreateObject();
-  cJSON_AddNumberToObject(root, "id", message_id++);
+  last_run_message_id = message_id++;
+  last_run_start_ts_ms = esp_log_timestamp();
+  cJSON_AddNumberToObject(root, "id", last_run_message_id);
   cJSON_AddStringToObject(root, "type", "assist_pipeline/run");
 
   // Pipeline configuration with STT input
@@ -750,9 +925,9 @@ char *ha_client_start_conversation(void) {
   }
 
   ESP_LOGI(TAG, "Starting Assist Pipeline: %s", json_str);
-  int ret = esp_websocket_client_send_text(ws_client, json_str,
-                                           strlen(json_str),
-                                           pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
+  int ret =
+      esp_websocket_client_send_text(ws_client, json_str, strlen(json_str),
+                                     pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
 
   free(json_str);
   cJSON_Delete(root);
@@ -808,9 +983,9 @@ esp_err_t ha_client_stream_audio(const uint8_t *audio_data, size_t length,
   audio_frame_buf[0] = (uint8_t)stt_binary_handler_id;
   memcpy(audio_frame_buf + 1, audio_data, length);
 
-  int ret = esp_websocket_client_send_bin(ws_client, (const char *)audio_frame_buf,
-                                          needed,
-                                          pdMS_TO_TICKS(HA_SEND_AUDIO_TIMEOUT_MS));
+  int ret = esp_websocket_client_send_bin(
+      ws_client, (const char *)audio_frame_buf, needed,
+      pdMS_TO_TICKS(HA_SEND_AUDIO_TIMEOUT_MS));
   // Note: send may return 0 on timeout; treat as failure.
   if (ret <= 0) {
     ESP_LOGE(TAG, "Failed to send audio chunk (%d bytes, ret=%d)", (int)length,
@@ -836,8 +1011,9 @@ esp_err_t ha_client_end_audio_stream(void) {
 
   // Send binary frame with just handler ID (no audio data) to signal end
   uint8_t end_frame[1] = {(uint8_t)stt_binary_handler_id};
-  int ret = esp_websocket_client_send_bin(ws_client, (const char *)end_frame, 1,
-                                          pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
+  int ret =
+      esp_websocket_client_send_bin(ws_client, (const char *)end_frame, 1,
+                                    pdMS_TO_TICKS(HA_SEND_AUDIO_TIMEOUT_MS));
 
   if (ret <= 0) {
     ESP_LOGE(TAG, "Failed to send end-of-audio signal");
@@ -847,7 +1023,7 @@ esp_err_t ha_client_end_audio_stream(void) {
   ESP_LOGI(TAG, "Audio stream ended (handler_id=%d)", stt_binary_handler_id);
 
   // Reset handler ID for next conversation
-  stt_binary_handler_id = -1;
+  ha_clear_audio_ready();
 
   return ESP_OK;
 }
@@ -905,9 +1081,9 @@ esp_err_t ha_client_request_tts(const char *text) {
   }
 
   ESP_LOGI(TAG, "Requesting TTS: %s", json_str);
-  int ret = esp_websocket_client_send_text(ws_client, json_str,
-                                           strlen(json_str),
-                                           pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
+  int ret =
+      esp_websocket_client_send_text(ws_client, json_str, strlen(json_str),
+                                     pdMS_TO_TICKS(HA_SEND_TEXT_TIMEOUT_MS));
 
   free(json_str);
   cJSON_Delete(root);

@@ -132,8 +132,9 @@ static esp_err_t play_mp3_buffer(uint8_t *mp3_data, size_t mp3_size)
             // Write PCM data to I2S
             size_t pcm_bytes = frame_info.outputSamps * sizeof(int16_t);
             size_t bytes_written = 0;
+            // timeout_ms: 0 means block indefinitely
             esp_err_t ret = bsp_extra_i2s_write(pcm_buffer, pcm_bytes,
-                                                &bytes_written, portMAX_DELAY);
+                                                &bytes_written, 0);
 
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));

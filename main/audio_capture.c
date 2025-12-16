@@ -62,7 +62,11 @@ static void capture_task(void *arg) {
     // Read audio data from I2S using BSP function
     esp_err_t ret =
         bsp_extra_i2s_read(buffer, CAPTURE_BUFFER_SIZE * sizeof(int16_t),
-                           &bytes_read, portMAX_DELAY);
+                           &bytes_read, 50);
+
+    if (ret == ESP_ERR_TIMEOUT) {
+      continue;
+    }
 
     if (ret == ESP_OK && bytes_read > 0) {
       size_t num_samples = bytes_read / sizeof(int16_t);
