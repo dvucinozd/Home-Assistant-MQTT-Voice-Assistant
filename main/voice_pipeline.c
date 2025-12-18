@@ -3,7 +3,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/semphr.h"
 #include "esp_err.h"
 #include "esp_check.h"
 #include <string.h>
@@ -11,7 +10,6 @@
 #include <math.h>
 
 #include "audio_capture.h"
-#include "wwd.h"
 #include "ha_client.h"
 #include "tts_player.h"
 #include "led_status.h"
@@ -47,7 +45,6 @@ typedef struct {
 
 static QueueHandle_t pipeline_cmd_queue = NULL;
 static TaskHandle_t pipeline_task_handle = NULL;
-static SemaphoreHandle_t config_mutex = NULL;
 
 // State variables
 static bool is_wwd_running = false;
@@ -101,9 +98,6 @@ esp_err_t voice_pipeline_init(void) {
     pipeline_cmd_queue = xQueueCreate(10, sizeof(pipeline_cmd_t));
     if (!pipeline_cmd_queue) return ESP_ERR_NO_MEM;
 
-    config_mutex = xSemaphoreCreateMutex();
-    if (!config_mutex) return ESP_ERR_NO_MEM;
-
     // Initialize Audio Capture (includes AFE/WWD/MultiNet)
     audio_capture_init();
     
@@ -151,27 +145,16 @@ void voice_pipeline_on_music_state_change(bool is_playing) {
 
 esp_err_t voice_pipeline_update_config(const voice_pipeline_config_t *config) {
     if (!config) return ESP_ERR_INVALID_ARG;
-
-    if (config_mutex) xSemaphoreTake(config_mutex, portMAX_DELAY);
     bool wwd_changed = (fabs(config->wwd_threshold - current_config.wwd_threshold) > 0.01f);
     current_config = *config;
-    if (config_mutex) xSemaphoreGive(config_mutex);
-
     if (wwd_changed) {
-        // Use runtime update instead of restart
-        if (wwd_set_threshold(config->wwd_threshold) != ESP_OK) {
-             ESP_LOGW(TAG, "Failed to update WWD threshold at runtime");
-        }
+        pipeline_post_cmd(PIPELINE_CMD_RESTART_WWD, 0);
     }
     return ESP_OK;
 }
 
 void voice_pipeline_get_config(voice_pipeline_config_t *config) {
-    if (config) {
-        if (config_mutex) xSemaphoreTake(config_mutex, portMAX_DELAY);
-        *config = current_config;
-        if (config_mutex) xSemaphoreGive(config_mutex);
-    }
+    if (config) *config = current_config;
 }
 
 bool voice_pipeline_is_running(void) {
@@ -225,12 +208,7 @@ static void pipeline_task(void *arg) {
                     beep_tone_play(800, 120, 40);
                     vTaskDelay(pdMS_TO_TICKS(50));
 
-                    uint32_t max_rec_ms = 7000;
-                    if (config_mutex) xSemaphoreTake(config_mutex, portMAX_DELAY);
-                    max_rec_ms = current_config.vad_max_recording_ms;
-                    if (config_mutex) xSemaphoreGive(config_mutex);
-
-                    start_audio_streaming(max_rec_ms, "wake_word");
+                    start_audio_streaming(current_config.vad_max_recording_ms, "wake_word");
                     wake_detect_pending = false;
                     break;
 

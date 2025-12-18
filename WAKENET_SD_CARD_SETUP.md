@@ -49,7 +49,7 @@ Copy-Item -Path "managed_components\\espressif__esp-sr\\model\\wakenet_model\\wn
 1) Enable SD-card model loading:
 - `idf.py menuconfig` → `Component config` → `ESP Speech Recognition` → enable `MODEL_IN_SDCARD` (`CONFIG_MODEL_IN_SDCARD`)
 
-2) In SD model mode, `main/wwd.c` loads models from `/sdcard/srmodels` (compile-time).
+2) In SD model mode, the firmware loads models from `/sdcard/srmodels` (compile-time).
 
 3) Ensure SD card is mounted **before** WakeNet init:
 - In this project SD mounting is typically tied to **Ethernet connectivity**; in WiFi(SDIO) mode SD is disabled.

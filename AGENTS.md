@@ -17,11 +17,6 @@ Recent fixes (Dec 17, 2025)
 - LED status log now includes task name for debugging: `LED status: X -> Y [task_name]`.
 - Fixed LED timing: LED is set to SPEAKING *before* TTS download starts, stays cyan during playback.
 
-### WWD Threshold Runtime Control
-- Added `wwd_set_threshold(float threshold)` and `wwd_get_threshold()` to `wwd.c/wwd.h`.
-- MQTT control uses runtime function instead of full WWD reinit.
-- Fixed MQTT threshold range from 0.3-0.9 to valid 0.5-0.95.
-
 ### CYD Display Integration
 - Fixed `va_response` MQTT sensor not being published.
 - Speech text now extracted from `intent-end` event (`response.speech.plain.speech`).
@@ -63,8 +58,6 @@ Files touched in latest changes
 - `main/led_status.c` – SPEAKING/OTA fast pulsing (300ms), debug task name in log.
 - `main/ha_client.c` – LED set in `tts-start`, speech extraction from `intent-end` for CYD.
 - `main/ota_update.c` – LED_STATUS_OTA on update start, restore to IDLE on failure.
-- `main/wwd.c` / `main/wwd.h` – `wwd_set_threshold()` and `wwd_get_threshold()` for runtime control.
-- `main/main.c` – MQTT threshold callback uses runtime function, range 0.5-0.95.
 
 Known quirks
 ------------
