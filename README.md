@@ -85,6 +85,10 @@ LED statusi su implementirani u `main/led_status.c` i vezani uz VA/OTA događaje
 
 `help_scripts/` sadrži skripte za čitanje HA stanja/logova preko WebSocket API‑ja (token se uzima iz env var ili iz `main/config.h` lokalno).
 
+## Tehničke specifikacije
+
+Detaljan popis tehnologija/komponenti je u `TECHNICAL_SPECIFICATIONS.md`.
+
 ## Licence / Zasluge
 
 - ESP‑IDF / ESP‑SR / Home Assistant
