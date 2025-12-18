@@ -1,146 +1,108 @@
-# ESP32-P4 Voice Assistant - Production Firmware
+# ESP32-P4 Voice Assistant - JC-ESP32P4-M3-DEV
 
-**Lokalni AI Glasovni Asistent za Home Assistant na ESP32-P4 platformi.**
+**Lokalni AI Glasovni Asistent za Home Assistant na naprednoj ESP32-P4 platformi.**
 
-Ovo je napredni, produkcijski spreman firmware koji transformira ESP32-P4 u pametni zvučnik s podrškom za offline naredbe, prekidanje govora (barge-in) i duboku integraciju s Home Assistantom.
+Ovaj projekt predstavlja stabilan, produkcijski spreman firmware za **JC-ESP32P4-M3-DEV** razvojnu ploču. Firmware pretvara vaš ESP32-P4 u pametni zvučnik s podrškom za offline wake word detekciju, lokalno prepoznavanje naredbi i duboku integraciju s Home Assistant "Assist" sustavom.
 
-## 📋 Status Projekta
+---
 
-**Faza:** 🚀 **PRODUCTION READY (Completed)**  
-**Verzija:** 3.0.0 (Modular Architecture + AFE + MultiNet)  
-**Framework:** ESP-IDF v5.5  
+## 🌟 Ključne Značajke
 
-### Ključne Značajke
-
-*   **🗣️ Napredni Audio Engine (ESP-SR AFE):**
-    *   **AI Wake Word:** Offline detekcija "Hi ESP" (WakeNet).
-    *   **AEC & Barge-in:** Poništavanje jeke omogućuje prekidanje asistenta dok svira glazbu ili govori.
-    *   **Noise Suppression:** Uklanjanje pozadinske buke za kristalno čist prijenos glasa.
-*   **⚡ Offline Naredbe (MultiNet):**
-    *   Lokalno prepoznavanje naredbi bez interneta (npr. "Turn on the light", "Play music", "Stop").
+*   **🗣️ Napredni AI Audio sustav (ESP-SR AFE):**
+    *   **Wake Word:** Lokalna detekcija "Hi ESP" (WakeNet).
+    *   **AEC (Acoustic Echo Cancellation):** Softversko poništavanje jeke koje omogućuje "Barge-in" (prekidanje asistenta dok svira glazbu ili govori).
+    *   **Noise Suppression & VAD:** AI-bazirano uklanjanje pozadinske buke i detekcija govora.
+*   **⚡ Lokalno Prepoznavanje (MultiNet):** Prepoznavanje naredbi bez interneta (npr. "Turn on the light", "Play music").
 *   **🏠 Home Assistant Integracija:**
-    *   **Assist Pipeline:** Puni dvosmjerni razgovor preko WebSocketa.
-    *   **MQTT:** Kontrola uređaja, status senzora i dijagnostika.
-*   **🎵 Multimedija:**
-    *   Lokalni MP3 player (SD kartica).
-    *   Glasovna kontrola playera ("Next song", "Stop").
-*   **⏰ Alarmi i Timeri:**
-    *   Lokalni alarmi spremljeni u trajnu memoriju (NVS).
-    *   Timeri koji rade i bez WiFi-a.
-*   **🛡️ System Hardening:**
-    *   **Task Watchdog:** Automatski reset u slučaju smrzavanja audio sustava.
-    *   **Safe Mode:** Zaštita od boot loop-a (pokreće samo WiFi/Web za oporavak).
-    *   **Crash Reporting:** Slanje razloga rušenja (Panic/WDT) na Home Assistant dashboard.
-*   **⚙️ Web Dashboard:**
-    *   Konfiguracija osjetljivosti (WWD/VAD) i pregled logova u stvarnom vremenu (WebSerial).
+    *   **Assist Pipeline:** WebSocket streaming za STT/TTS (Speech-to-Text / Text-to-Speech).
+    *   **MQTT HA:** Kontrola uređaja, dijagnostika i status senzora izravno u Home Assistantu.
+*   **🎵 Multimedija i Alarmi:**
+    *   Lokalni MP3 player (podrška za SD karticu).
+    *   Upravljanje alarmima i timerima spremljenim u NVS (rade i bez mreže).
+*   **🛡️ Robustan Sustav:**
+    *   **Safe Mode:** Automatska zaštita od boot-loopa (nakon 3 rušenja sustav ulazi u mod za oporavak).
+    *   **Task Watchdog:** Monitor kritičnih procesa za automatski reset u slučaju blokiranja.
+*   **⚙️ Web Sučelje:** Web-bazirani dashboard za konfiguraciju, nadzor sustava i pregled logova u stvarnom vremenu (WebSerial).
 
 ---
 
-## 🔧 Hardver
+## 🔧 Hardverska Specifikacija
 
-- **Board:** JC-ESP32P4-M3-DEV (Guition)
-- **MCU:** ESP32-P4NRW32 (Dual-core RISC-V @ 400MHz, 32MB PSRAM)
-- **WiFi:** ESP32-C6-MINI-1 (SDIO veza)
-- **Audio:** ES8311 Codec + NS4150B Pojačalo
+*   **MCU:** ESP32-P4 (Dual-core RISC-V @ 400MHz, 32MB PSRAM).
+*   **WiFi:** ESP32-C6 (povezan preko SDIO sučelja).
+*   **Audio Codec:** ES8311.
+*   **LED Indikacija:** 
+    *   Pins: Crvena (45), Zelena (46), Plava (47).
+    *   Logic: **Active Low** (Common Anode) s LEDC PWM kontrolom svjetline.
 
 ---
 
-## 🚀 Brzi Start
+## 🚀 Instalacija i Konfiguracija
 
-### 1. Konfiguracija
+### 1. Preduvjeti
+*   Instaliran **ESP-IDF v5.5**.
+*   Postavljen `PYTHONIOENCODING=utf-8` i `chcp 65001` (za Windows korisnike kako bi se izbjegle Unicode greške).
 
-Kopiraj `main/config.h.example` u `main/config.h` i unesi WiFi/HA podatke.
-*Napomena:* Nakon prvog flashanja, postavke se spremaju u **NVS**. Možeš ih mijenjati kasnije putem Web Dashboarda bez rekompajliranja!
+### 2. Konfiguracija
+Kopirajte predložak konfiguracije:
+```bash
+cp main/config.h.example main/config.h
+```
+U `main/config.h` unesite svoje WiFi i Home Assistant (Token/URL) podatke.
 
-### 2. Build & Flash
+### 3. Build i Flash
+Sustav koristi prilagođenu particijsku tablicu (4MB za AI modele). Preporuča se brisanje flasha prije prvog snimanja:
 
-Zbog promjene particijske tablice (za smještaj AI modela), prvo flashanje će **obrisati sve podatke**.
+```powershell
+# Brisanje svega (preporučeno za prvi put)
+idf.py erase-flash
 
-```cmd
-# Windows (koristi build.bat helper)
+# Build i Flash
 .\build.bat
 .\flash.bat
-
-# Ili ručno
-idf.py build
-idf.py -p COMx flash monitor
 ```
 
-### 3. Prvo Korištenje
+---
 
-1.  Pričekaj da LED postane **ZELENA** (Spreman).
-2.  Reci **"Hi ESP"**. LED postaje **PLAVA** (Slušam).
-3.  Reci naredbu (npr. *"Turn on the light"* ili *"Tell me a joke"*).
+## 🛠️ Stabilizacija i Fixes (V2)
+
+U verziji V2 implementirana su kritična poboljšanja stabilnosti:
+1.  **AFE Fix:** Ispravljena inicijalizacija AFE sustava (postavljen "MR" mod za Mic/Reference) čime je riješen inicijalni boot-loop.
+2.  **Stack Management:** Povećan stack size glavnog taska na **12KB** kako bi se spriječio Stack Overflow tijekom kompleksne inicijalizacije AI modela.
+3.  **LED Hardware Integration:** Potpuno redefiniran `led_status.c` za rad s Active Low hardverom na JC ploči, koristeći preciznu LEDC PWM kontrolu.
+4.  **Unicode Sanity:** Uklonjeni svi specijalni karakteri (emoji, strelice) iz logova koji su uzrokovali padanje Python monitor alata na Windows sustavima.
+5.  **Netif Guard:** Dodana provjera postojanja mrežnog sučelja u `wifi_manager.c` kako bi se izbjegao fatalni pad sustava pri pokušaju ponovnog povezivanja.
 
 ---
 
-## 🗣️ Glasovne Naredbe
+## 📂 Struktura Projekta
 
-Sustav koristi hibridni pristup: prvo provjerava lokalne naredbe, a zatim šalje audio na Home Assistant.
-
-### 🌐 Offline (Trenutno, Lokalno)
-Rade i bez WiFi-a:
-*   "Turn on the light" (Simulacija: LED Blue)
-*   "Turn off the light" (Simulacija: LED Green)
-*   "Play music" (Pokreće MP3 s SD kartice)
-*   "Stop music" / "Stop"
-*   "Next song" / "Previous song"
-
-### ☁️ Online (Home Assistant)
-Bilo što što tvoj HA Assist pipeline podržava:
-*   "What time is it?"
-*   "Turn on the kitchen lights"
-*   "Set a timer for 5 minutes"
-
----
-
-## 📂 Nova Arhitektura
-
-Projekt je kompletno refaktoriran u modularni dizajn:
-
-*   **`main.c`**: Samo inicijalizacija sustava.
-*   **`voice_pipeline.c`**: Centralni "mozak" (State Machine). Upravlja tokom događaja (Wake -> Record -> Process -> Action).
-*   **`audio_capture.c`**: Wrapper oko **ESP-SR AFE**. Upravlja mikrofonom, AEC-om, WakeNet-om i MultiNet-om.
-*   **`ha_client.c`**: WebSocket klijent za streaming zvuka i primanje TTS-a.
-*   **`sys_diag.c`**: Watchdog timer i zaštita od boot loop-a.
-*   **`settings_manager.c`**: Upravljanje NVS konfiguracijom.
-*   **`audio_ref_buffer.c`**: Ring buffer za AEC loopback (Barge-in).
+*   `main/voice_pipeline.c` - Upravljanje stanjima asistenta (Slušanje, Obrada, TTS).
+*   `main/audio_capture.c` - Audio ulaz, obrada šuma, AEC i AI detekcija.
+*   `main/ha_client.c` - Komunikacija s Home Assistant WebSocket API-jem.
+*   `main/led_status.c` - Vizualna signalizacija stanja (LEDC PWM).
+*   `main/sys_diag.c` - Dijagnostika, Watchdog i Safe Mode logika.
+*   `main/webserial.c` - HTTP poslužitelj za dashboard i logove.
 
 ---
 
 ## 🛡️ Sigurnost i Oporavak
 
 ### Safe Mode
-Ako se uređaj resetira 3 puta zaredom unutar 1 minute (npr. zbog greške u audio driveru), ulazi u **Safe Mode**.
-*   **Indikacija:** LED bljeska CRVENO.
-*   **Funkcije:** Audio je isključen. Rade samo WiFi, WebSerial i OTA.
-*   **Oporavak:** Spoji se na Web Dashboard i napravi OTA update ili resetiraj postavke.
-
-### Web Dashboard
-Dostupan na `http://<IP-ADRESA>/`.
-*   **Status:** IP, Uptime, Heap, WWD status.
-*   **WebSerial:** Live logovi u pregledniku (`/webserial`).
-*   **Config:** Promjena osjetljivosti (Threshold) i AGC-a u letu.
+Ako se uređaj sruši 3 puta unutar jedne minute, LED će početi bljeskati **CRVENO**. U ovom modu:
+*   Audio podsustav je isključen (štedi memoriju i spriječava pad).
+*   WiFi i HTTP server ostaju aktivni.
+*   Korisnik može pristupiti Dashboardu na IP adresi uređaja i izvršiti **OTA ažuriranje** ili promijeniti postavke.
 
 ---
 
-## 📦 Particije
+## 📝 Licence i Zasluge
 
-Koristi se custom `partitions.csv` kako bi se osiguralo **4MB** prostora za AI modele (WakeNet/MultiNet).
+Ovaj projekt koristi:
+*   [ESP-SR](https://github.com/espressif/esp-sr) za AI obradu govora.
+*   [ESP-IDF](https://github.com/espressif/esp-idf) framework.
+*   [Home Assistant](https://www.home-assistant.io/) za pametno upravljanje domom.
 
-| Name | Type | SubType | Size | Usage |
-| :--- | :--- | :--- | :--- | :--- |
-| nvs | data | nvs | 24K | Postavke, Alarmi |
-| ota_0/1 | app | ota | 3M | Firmware |
-| model | data | spiffs | **4M** | AI Modeli (srmodels.bin) |
-| storage | data | spiffs | 2M | Web UI assets (opcionalno) |
-
----
-
-## 📝 Zasluge
-
-Razvijeno kao edukacijski projekt za demonstraciju snage ESP32-P4 čipa.
-Koristi Espressif **ESP-IDF**, **ESP-SR** (AI Audio), **ESP-ADF** (Driveri) i **LVGL**.
-
-**Autor:** Daniel (uz pomoć Gemini AI Agenta)  
+**Autor:** Daniel  
+**Asistent:** Gemini AI Agent  
 **Datum:** Prosinac 2025.

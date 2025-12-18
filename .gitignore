@@ -1,12 +1,15 @@
 # Build artifacts
 build/
+dist/
+out/
 *.bin
 *.elf
 *.map
 
 # Dependencies
 dependencies.lock
-managed_components/.component_hash
+managed_components/
+!managed_components/.component_hash
 
 # IDE
 .vscode/
@@ -24,6 +27,7 @@ Thumbs.db
 
 # Local caches
 .cache/
+.pytest_cache/
 __pycache__/
 *.pyc
 
