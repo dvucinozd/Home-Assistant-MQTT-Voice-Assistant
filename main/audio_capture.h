@@ -185,6 +185,13 @@ float audio_capture_get_agc_gain(void);
  */
 esp_err_t audio_capture_set_agc_target(uint16_t target_level);
 
+/**
+ * @brief Set WakeNet threshold at runtime.
+ * @param threshold Threshold value (0.0 - 1.0)
+ * @return ESP_OK if supported/success
+ */
+esp_err_t audio_capture_set_wakenet_threshold(float threshold);
+
 #ifdef __cplusplus
 }
 #endif

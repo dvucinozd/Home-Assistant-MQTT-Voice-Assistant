@@ -374,3 +374,16 @@ void audio_capture_disable_agc(void) {}
 bool audio_capture_is_agc_enabled(void) { return true; }
 float audio_capture_get_agc_gain(void) { return 1.0f; }
 esp_err_t audio_capture_set_agc_target(uint16_t target_level) { return ESP_OK; }
+
+esp_err_t audio_capture_set_wakenet_threshold(float threshold) {
+    if (!afe_handle || !afe_data) return ESP_ERR_INVALID_STATE;
+
+    if (afe_handle->set_wakenet_threshold) {
+        afe_handle->set_wakenet_threshold(afe_data, threshold);
+        ESP_LOGI(TAG, "WakeNet threshold set to %.2f", threshold);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "set_wakenet_threshold not supported by AFE handle");
+    return ESP_ERR_NOT_SUPPORTED;
+}
