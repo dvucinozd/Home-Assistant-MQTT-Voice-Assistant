@@ -10,6 +10,8 @@
 #include "local_music_player.h"
 #include "mqtt_ha.h"
 #include "network_manager.h"
+#include "ota_update.h"
+#include "led_status.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
@@ -32,9 +34,27 @@ static SemaphoreHandle_t log_mutex = NULL;
 static vprintf_like_t original_log_func = NULL;
 static int client_count = 0;
 
-// Minimal HTML to ensure file write success
-static const char *dashboard_html = "<html><body><h2>ESP32-P4</h2><a href='/webserial'>Console</a></body></html>";
-static const char *webserial_html = "<html><body><h2>Log</h2><pre id='c'></pre><script>fetch('/webserial/logs').then(r=>r.text()).then(t=>document.getElementById('c').innerText=t)</script></body></html>";
+// Enhanced HTML for better control
+static const char *dashboard_html = 
+    "<html><head><title>ESP32-P4 Control</title>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<style>body{font-family:sans-serif;margin:20px;background:#f0f2f5} .card{background:white;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);margin-bottom:20px} "
+    "button{padding:10px 20px;margin:5px;cursor:pointer;border:none;border-radius:4px;background:#007bff;color:white} button:hover{background:#0056b3} "
+    "input{padding:10px;width:100%;max-width:400px;margin-bottom:10px;border:1px solid #ddd;border-radius:4px}</style></head>"
+    "<body>"
+    "<h2>ESP32-P4 Voice Assistant</h2>"
+    "<div class='card'><h3>System Status</h3><div id='status'>Loading...</div><button onclick='fetchStatus()'>Refresh</button></div>"
+    "<div class='card'><h3>Controls</h3><button onclick=\"doAction('restart')\">Reboot Device</button><button onclick=\"doAction('wwd_resume')\">Start WWD</button><button onclick=\"doAction('wwd_stop')\">Stop WWD</button><button onclick=\"doAction('led_test')\">LED Test</button></div>"
+    "<div class='card'><h3>OTA Update</h3><input type='text' id='otaUrl' placeholder='http://192.168.1.x:8000/firmware.bin'><br><button onclick='startOta()'>Start Update</button></div>"
+    "<div class='card'><h3>Diagnostics</h3><a href='/webserial'><button>View Real-time Logs</button></a></div>"
+    "<script>"
+    "function fetchStatus(){fetch('/api/status').then(r=>r.json()).then(j=>{document.getElementById('status').innerText='IP: '+j.ip+' | Uptime: '+j.uptime+'s | WWD Active: '+(j.wwd?'Yes':'No')})}"
+    "function doAction(cmd){fetch('/api/action',{method:'POST',body:'cmd='+cmd})}"
+    "function startOta(){const url=document.getElementById('otaUrl').value; if(!url){alert('URL is empty');return;} if(confirm('Start OTA update? Device will reboot.')){fetch('/api/ota',{method:'POST',body:'url='+url}).then(r=>r.json()).then(j=>alert(j.ok?'Update started! Check logs.':'Failed to start update'))}}"
+    "fetchStatus();setInterval(fetchStatus, 5000);"
+    "</script></body></html>";
+
+static const char *webserial_html = "<html><body><h2>System Logs</h2><button onclick='location.reload()'>Refresh</button> <a href='/'><button>Back to Dashboard</button></a><hr><pre id='c'></pre><script>fetch('/webserial/logs').then(r=>r.text()).then(t=>document.getElementById('c').innerText=t)</script></body></html>";
 
 static int webserial_log_func(const char *fmt, va_list args) {
     int ret = 0;
@@ -126,6 +146,7 @@ static esp_err_t api_action_handler(httpd_req_t *req) {
             if (strcmp(cmd, "restart") == 0) voice_pipeline_trigger_restart();
             else if (strcmp(cmd, "wwd_resume") == 0) voice_pipeline_start();
             else if (strcmp(cmd, "wwd_stop") == 0) voice_pipeline_stop();
+            else if (strcmp(cmd, "led_test") == 0) led_status_test_pattern();
         }
     }
     httpd_resp_set_type(req, "application/json");
@@ -135,6 +156,21 @@ static esp_err_t api_action_handler(httpd_req_t *req) {
 static esp_err_t api_config_handler(httpd_req_t *req) {
     httpd_resp_send(req, "{}", 2);
     return ESP_OK;
+}
+
+static esp_err_t api_ota_handler(httpd_req_t *req) {
+    char body[256];
+    if (recv_body(req, body, sizeof(body)) == ESP_OK) {
+        char url[192];
+        if (form_get_param(body, "url", url, sizeof(url))) {
+            ESP_LOGI(TAG, "OTA Requested via Web: %s", url);
+            ota_update_start(url);
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_send(req, "{\"ok\":true}", 10);
+        }
+    }
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing URL");
+    return ESP_FAIL;
 }
 
 static esp_err_t dashboard_handler(httpd_req_t *req) {
@@ -152,7 +188,7 @@ esp_err_t webserial_init(void) {
     log_mutex = xSemaphoreCreateMutex();
     
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_open_sockets = 3;
+    config.max_open_sockets = 5; // Increased for better stability
     
     if (httpd_start(&server, &config) == ESP_OK) {
         httpd_uri_t uris[] = {
@@ -160,6 +196,7 @@ esp_err_t webserial_init(void) {
             {"/api/status", HTTP_GET, api_status_handler, NULL},
             {"/api/action", HTTP_POST, api_action_handler, NULL},
             {"/api/config", HTTP_POST, api_config_handler, NULL},
+            {"/api/ota", HTTP_POST, api_ota_handler, NULL},
             {"/webserial", HTTP_GET, webserial_page_handler, NULL},
             {"/webserial/logs", HTTP_GET, logs_handler, NULL},
             {"/webserial/clear", HTTP_GET, clear_handler, NULL}
@@ -169,7 +206,7 @@ esp_err_t webserial_init(void) {
         }
         original_log_func = esp_log_set_vprintf(webserial_log_func);
         server_running = true;
-        ESP_LOGI(TAG, "WebSerial Started");
+        ESP_LOGI(TAG, "Web Dashboard with OTA Support Started");
         return ESP_OK;
     }
     return ESP_FAIL;
