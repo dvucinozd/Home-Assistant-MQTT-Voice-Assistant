@@ -1,4 +1,5 @@
 #include "voice_pipeline.h"
+#include "va_control.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -447,4 +448,102 @@ static void intent_handler(const char *intent_name, const char *intent_data, con
 static void restart_task(void *arg) {
     vTaskDelay(pdMS_TO_TICKS(2000));
     esp_restart();
+}
+
+// =============================================================================
+// VA CONTROL IMPLEMENTATION
+// =============================================================================
+
+float va_control_get_wwd_threshold(void) {
+    return current_config.wwd_threshold;
+}
+
+uint32_t va_control_get_vad_threshold(void) {
+    return current_config.vad_speech_threshold;
+}
+
+uint32_t va_control_get_vad_silence_duration_ms(void) {
+    return current_config.vad_silence_ms;
+}
+
+uint32_t va_control_get_vad_min_speech_ms(void) {
+    return current_config.vad_min_speech_ms;
+}
+
+uint32_t va_control_get_vad_max_recording_ms(void) {
+    return current_config.vad_max_recording_ms;
+}
+
+bool va_control_get_agc_enabled(void) {
+    return current_config.agc_enabled;
+}
+
+uint16_t va_control_get_agc_target_level(void) {
+    return current_config.agc_target_level;
+}
+
+bool va_control_get_pipeline_active(void) {
+    return is_pipeline_active;
+}
+
+bool va_control_get_wwd_running(void) {
+    return is_wwd_running;
+}
+
+esp_err_t va_control_set_wwd_threshold(float threshold) {
+    voice_pipeline_config_t cfg = current_config;
+    cfg.wwd_threshold = threshold;
+    return voice_pipeline_update_config(&cfg);
+}
+
+esp_err_t va_control_set_vad_threshold(uint32_t threshold) {
+    voice_pipeline_config_t cfg = current_config;
+    cfg.vad_speech_threshold = threshold;
+    return voice_pipeline_update_config(&cfg);
+}
+
+esp_err_t va_control_set_vad_silence_duration_ms(uint32_t ms) {
+    voice_pipeline_config_t cfg = current_config;
+    cfg.vad_silence_ms = ms;
+    return voice_pipeline_update_config(&cfg);
+}
+
+esp_err_t va_control_set_vad_min_speech_ms(uint32_t ms) {
+    voice_pipeline_config_t cfg = current_config;
+    cfg.vad_min_speech_ms = ms;
+    return voice_pipeline_update_config(&cfg);
+}
+
+esp_err_t va_control_set_vad_max_recording_ms(uint32_t ms) {
+    voice_pipeline_config_t cfg = current_config;
+    cfg.vad_max_recording_ms = ms;
+    return voice_pipeline_update_config(&cfg);
+}
+
+esp_err_t va_control_set_agc_enabled(bool enabled) {
+    voice_pipeline_config_t cfg = current_config;
+    cfg.agc_enabled = enabled;
+    return voice_pipeline_update_config(&cfg);
+}
+
+esp_err_t va_control_set_agc_target_level(uint16_t target_level) {
+    voice_pipeline_config_t cfg = current_config;
+    cfg.agc_target_level = target_level;
+    return voice_pipeline_update_config(&cfg);
+}
+
+void va_control_action_restart(void) {
+    voice_pipeline_trigger_restart();
+}
+
+void va_control_action_wwd_resume(void) {
+    pipeline_post_cmd(PIPELINE_CMD_RESUME_WWD, 0);
+}
+
+void va_control_action_wwd_stop(void) {
+    pipeline_post_cmd(PIPELINE_CMD_STOP_WWD, 0);
+}
+
+void va_control_action_test_tts(const char *text) {
+    voice_pipeline_test_tts(text);
 }

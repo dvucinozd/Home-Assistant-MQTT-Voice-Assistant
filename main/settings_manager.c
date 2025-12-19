@@ -70,6 +70,7 @@ esp_err_t settings_manager_load(app_settings_t *settings) {
         strncpy(settings->mqtt_client_id, MQTT_CLIENT_ID, sizeof(settings->mqtt_client_id)-1);
         settings->mqtt_client_id[sizeof(settings->mqtt_client_id)-1] = '\0';
         settings->output_volume = DEFAULT_OUTPUT_VOLUME;
+        settings->ota_url[0] = '\0';
         return ESP_OK;
     }
 
@@ -99,6 +100,8 @@ esp_err_t settings_manager_load(app_settings_t *settings) {
     if (out_vol > 100) out_vol = 100;
     settings->output_volume = (int)out_vol;
 
+    nvs_get_str_safe(my_handle, "ota_url", settings->ota_url, sizeof(settings->ota_url), "");
+
     nvs_close(my_handle);
     return ESP_OK;
 }
@@ -127,6 +130,8 @@ esp_err_t settings_manager_save(const app_settings_t *settings) {
     if (out_vol < 0) out_vol = 0;
     if (out_vol > 100) out_vol = 100;
     nvs_set_i32(my_handle, "out_vol", out_vol);
+
+    nvs_set_str(my_handle, "ota_url", settings->ota_url);
 
     err = nvs_commit(my_handle);
     nvs_close(my_handle);

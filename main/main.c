@@ -25,6 +25,7 @@
 #include "ota_update.h"
 #include "led_status.h"
 #include "voice_pipeline.h"
+#include "va_control.h"
 #include "webserial.h"
 #include "local_music_player.h"
 #include "alarm_manager.h" 
@@ -208,6 +209,14 @@ static void mqtt_ota_url_callback(const char *entity_id, const char *payload) {
 
     ESP_LOGI(TAG, "OTA URL set via MQTT: %s", ota_url_value);
     (void)mqtt_ha_update_text("ota_url_input", ota_url_value);
+
+    // Save to settings
+    app_settings_t s;
+    if (settings_manager_load(&s) == ESP_OK) {
+        strncpy(s.ota_url, ota_url_value, sizeof(s.ota_url)-1);
+        s.ota_url[sizeof(s.ota_url)-1] = '\0';
+        settings_manager_save(&s);
+    }
 }
 
 static void mqtt_ota_trigger_callback(const char *entity_id, const char *payload) {
@@ -221,6 +230,55 @@ static void mqtt_ota_trigger_callback(const char *entity_id, const char *payload
 
     ESP_LOGI(TAG, "Starting OTA from MQTT URL: %s", ota_url_value);
     ota_update_start(ota_url_value);
+}
+
+// VAD / Voice Pipeline Callbacks
+static void mqtt_vad_threshold_callback(const char *entity_id, const char *payload) {
+    (void)entity_id;
+    if (!payload) return;
+    char *end = NULL;
+    float v = strtof(payload, &end);
+    if (end != payload) {
+        uint32_t val = (uint32_t)v;
+        va_control_set_vad_threshold(val);
+        mqtt_ha_update_number("vad_threshold", (float)val);
+    }
+}
+
+static void mqtt_vad_silence_callback(const char *entity_id, const char *payload) {
+    (void)entity_id;
+    if (!payload) return;
+    char *end = NULL;
+    float v = strtof(payload, &end);
+    if (end != payload) {
+        uint32_t val = (uint32_t)v;
+        va_control_set_vad_silence_duration_ms(val);
+        mqtt_ha_update_number("vad_silence_ms", (float)val);
+    }
+}
+
+static void mqtt_vad_min_speech_callback(const char *entity_id, const char *payload) {
+    (void)entity_id;
+    if (!payload) return;
+    char *end = NULL;
+    float v = strtof(payload, &end);
+    if (end != payload) {
+        uint32_t val = (uint32_t)v;
+        va_control_set_vad_min_speech_ms(val);
+        mqtt_ha_update_number("vad_min_speech_ms", (float)val);
+    }
+}
+
+static void mqtt_vad_max_recording_callback(const char *entity_id, const char *payload) {
+    (void)entity_id;
+    if (!payload) return;
+    char *end = NULL;
+    float v = strtof(payload, &end);
+    if (end != payload) {
+        uint32_t val = (uint32_t)v;
+        va_control_set_vad_max_recording_ms(val);
+        mqtt_ha_update_number("vad_max_recording_ms", (float)val);
+    }
 }
 
 static void mqtt_setup_task(void *arg) {
@@ -251,6 +309,12 @@ static void mqtt_setup_task(void *arg) {
     mqtt_ha_register_button("music_play", "Play Music", mqtt_music_play_callback);
     mqtt_ha_register_button("music_stop", "Stop Music", mqtt_music_stop_callback);
     mqtt_ha_register_button("led_test", "LED Test", mqtt_led_test_callback);
+
+    // VAD Configuration Entities
+    mqtt_ha_register_number("vad_threshold", "VAD Threshold", 0, 1000, 10, "", mqtt_vad_threshold_callback);
+    mqtt_ha_register_number("vad_silence_ms", "VAD Silence (ms)", 100, 5000, 100, "ms", mqtt_vad_silence_callback);
+    mqtt_ha_register_number("vad_min_speech_ms", "VAD Min Speech (ms)", 100, 2000, 50, "ms", mqtt_vad_min_speech_callback);
+    mqtt_ha_register_number("vad_max_recording_ms", "VAD Max Rec (ms)", 1000, 15000, 500, "ms", mqtt_vad_max_recording_callback);
     
     // Initial State
     mqtt_ha_update_switch("wwd_enabled", true);
@@ -264,6 +328,13 @@ static void mqtt_setup_task(void *arg) {
     // Publish initial LED brightness and OTA URL state.
     mqtt_ha_update_number("led_brightness", (float)led_status_get_brightness());
     mqtt_ha_update_number("output_volume", (float)bsp_extra_codec_volume_get());
+
+    // Publish initial VAD settings
+    mqtt_ha_update_number("vad_threshold", (float)va_control_get_vad_threshold());
+    mqtt_ha_update_number("vad_silence_ms", (float)va_control_get_vad_silence_duration_ms());
+    mqtt_ha_update_number("vad_min_speech_ms", (float)va_control_get_vad_min_speech_ms());
+    mqtt_ha_update_number("vad_max_recording_ms", (float)va_control_get_vad_max_recording_ms());
+
     if (ota_url_value[0] != '\0') {
         mqtt_ha_update_text("ota_url_input", ota_url_value);
     }
@@ -333,6 +404,13 @@ void app_main(void) {
     // Apply persisted output volume (default 60)
     if (!safe_mode) {
         bsp_extra_codec_volume_set(settings.output_volume, NULL);
+    }
+
+    // Load persisted OTA URL
+    if (settings.ota_url[0] != '\0') {
+        strncpy(ota_url_value, settings.ota_url, sizeof(ota_url_value)-1);
+        ota_url_value[sizeof(ota_url_value)-1] = '\0';
+        ESP_LOGI(TAG, "Loaded OTA URL from settings: %s", ota_url_value);
     }
 
     // 6. Network Init
