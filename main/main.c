@@ -288,6 +288,12 @@ static void mqtt_test_tts_callback(const char *entity_id, const char *payload) {
     voice_pipeline_test_tts("Ovo je test govora.");
 }
 
+static void mqtt_diagnostic_dump_callback(const char *entity_id, const char *payload) {
+    (void)entity_id;
+    (void)payload;
+    sys_diag_report_status();
+}
+
 static void mqtt_music_play_callback(const char *entity_id, const char *payload) {
     (void)entity_id;
     (void)payload;
@@ -516,6 +522,7 @@ static void mqtt_setup_task(void *arg) {
     mqtt_ha_register_switch("led_status_indicator", "LED Status Indicator", mqtt_led_indicator_callback);
     mqtt_ha_register_button("restart", "Restart Device", mqtt_restart_callback);
     mqtt_ha_register_button("test_tts", "Test TTS", mqtt_test_tts_callback);
+    mqtt_ha_register_button("diagnostic_dump", "Diagnostic Dump", mqtt_diagnostic_dump_callback);
 
     mqtt_ha_register_sensor("va_status", "VA Status", NULL, NULL);
     mqtt_ha_register_sensor("va_response", "VA Response", NULL, NULL);
