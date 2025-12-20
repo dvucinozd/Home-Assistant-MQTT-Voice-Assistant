@@ -3,8 +3,8 @@
  */
 
 #include "mqtt_ha.h"
-#include "config.h"
 #include "cJSON.h"
+#include "esp_app_format.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include <stdio.h>
@@ -44,7 +44,7 @@ static mqtt_entity_t entities[MAX_ENTITIES];
 static int entity_count = 0;
 static bool legacy_cleanup_done = false;
 
-#define LEGACY_DISCOVERY_COUNT 13
+#define LEGACY_DISCOVERY_COUNT 14
 static const char *legacy_discovery_topics[LEGACY_DISCOVERY_COUNT] = {
     "homeassistant/button/esp32p4_voice_assistant/diag_dump/config",
     "homeassistant/button/esp32p4_voice_assistant/music_next/config",
@@ -56,6 +56,7 @@ static const char *legacy_discovery_topics[LEGACY_DISCOVERY_COUNT] = {
     "homeassistant/number/esp32p4_voice_assistant/vad_silence_duration/config",
     "homeassistant/number/esp32p4_voice_assistant/wwd_threshold/config",
     "homeassistant/sensor/esp32p4_voice_assistant/ota_url/config",
+    "homeassistant/sensor/esp32p4_voice_assistant/webserial_clients/config",
     "homeassistant/switch/esp32p4_voice_assistant/agc_enabled/config",
     "homeassistant/switch/esp32p4_voice_assistant/led_enabled/config",
     "homeassistant/switch/esp32p4_voice_assistant/webserial_enabled/config"
@@ -147,7 +148,8 @@ static cJSON *build_device_json(void) {
   cJSON_AddStringToObject(device, "name", DEVICE_NAME);
   cJSON_AddStringToObject(device, "model", DEVICE_MODEL);
   cJSON_AddStringToObject(device, "manufacturer", DEVICE_MANUFACTURER);
-  cJSON_AddStringToObject(device, "sw_version", FIRMWARE_VERSION);
+  const esp_app_desc_t *app_desc = esp_app_get_description();
+  cJSON_AddStringToObject(device, "sw_version", app_desc ? app_desc->version : "unknown");
 
   return device;
 }

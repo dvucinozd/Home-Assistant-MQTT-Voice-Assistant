@@ -185,7 +185,7 @@ static void mqtt_publish_telemetry(void) {
     mqtt_ha_update_sensor("agc_current_gain", buf);
 
     snprintf(buf, sizeof(buf), "%d", webserial_get_client_count());
-    mqtt_ha_update_sensor("webserial_clients", buf);
+    mqtt_ha_update_sensor("webserial_requests", buf);
 
     mqtt_update_music_state(local_music_player_get_state(),
                             local_music_player_get_current_track(),
@@ -533,7 +533,7 @@ static void mqtt_setup_task(void *arg) {
     mqtt_ha_register_sensor("uptime", "Uptime", "s", NULL);
     mqtt_ha_register_sensor("firmware_version", "Firmware Version", NULL, NULL);
     mqtt_ha_register_sensor("network_type", "Network Type", NULL, NULL);
-    mqtt_ha_register_sensor("webserial_clients", "WebSerial Clients", NULL, NULL);
+    mqtt_ha_register_sensor("webserial_requests", "WebSerial Requests", NULL, NULL);
     mqtt_ha_register_sensor("agc_current_gain", "AGC Current Gain", NULL, NULL);
     mqtt_ha_register_sensor("music_state", "Music State", NULL, NULL);
     mqtt_ha_register_sensor("current_track", "Current Track", NULL, NULL);

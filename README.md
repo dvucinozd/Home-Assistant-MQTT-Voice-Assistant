@@ -57,7 +57,7 @@ Tijekom OTA LED status je `OTA` (bijelo brzo pulsiranje).
 
 Entiteti se pojave automatski (MQTT Discovery).
 
-- Senzori: `VA Status`, `VA Response`, `WiFi Signal` (RSSI dBm), `IP Address`, `Firmware Version`, `Free Memory`, `Uptime`, `Network Type`, `Music State`, `OTA Status/Progress`, `SD Card Status`, `WebSerial Clients`
+- Senzori: `VA Status`, `VA Response`, `WiFi Signal` (RSSI dBm), `IP Address`, `Firmware Version`, `Free Memory`, `Uptime`, `Network Type`, `Music State`, `OTA Status/Progress`, `SD Card Status`, `WebSerial Requests`
 - Kontrole: `Wake Word Detection`, `Auto Gain Control`, `LED Status Indicator` (switch), `LED Brightness`, `Output Volume`, `AGC Target Level`, `WWD Detection Threshold`, `VAD` (threshold/silence/min/max)
 - OTA: `OTA URL` (text), `Start OTA` (button)
 - Test/utility: `Test TTS`, `Restart Device`, `Play Music`/`Stop Music`, `LED Test`, `Diagnostic Dump` (button)

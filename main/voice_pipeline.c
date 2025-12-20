@@ -525,7 +525,7 @@ static void conversation_response_handler(const char *response_text, const char 
         return;
     }
 
-    if (response_text && response_text[strlen(response_text)-1] == '?') {
+    if (response_text && response_text[0] && response_text[strlen(response_text)-1] == '?') {
         followup_vad_pending = true;
     } else {
         followup_vad_pending = false;
