@@ -35,6 +35,7 @@ Previous fixes (Dec 2025)
 
 Build/Flash
 -----------
+- Versioning: before every build after code changes, bump the firmware name/version (start from `P4-HA-VA-0.0.1`).
 - Build: `python build.py` (requires ESP-IDF 5.5 env). If shell lacks IDF activation, run the standard `export.bat`/`install.ps1` first.
 - Flash: `python flash.py -p COMXX` (default COM13). If COM port is busy, close all monitors/esptool or replug USB (sometimes Windows requires a reboot to release the port).
 - OTA: run `python -m http.server 8080` from repo root (or `ota_server.bat`); set URL to `http://<PC_IP>:8080/build/esp32_p4_voice_assistant.bin`, then trigger OTA via MQTT (`esp32p4/ota_url_input/set`, `esp32p4/ota_trigger/set = ON`) or HA button.
