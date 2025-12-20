@@ -3,6 +3,7 @@
  */
 
 #include "mqtt_ha.h"
+#include "config.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
@@ -135,7 +136,7 @@ static cJSON *build_device_json(void) {
   cJSON_AddStringToObject(device, "name", DEVICE_NAME);
   cJSON_AddStringToObject(device, "model", DEVICE_MODEL);
   cJSON_AddStringToObject(device, "manufacturer", DEVICE_MANUFACTURER);
-  cJSON_AddStringToObject(device, "sw_version", "1.0.0");
+  cJSON_AddStringToObject(device, "sw_version", FIRMWARE_VERSION);
 
   return device;
 }
