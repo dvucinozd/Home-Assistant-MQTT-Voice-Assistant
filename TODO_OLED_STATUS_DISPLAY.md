@@ -22,6 +22,9 @@ Goal: Add a small **text-only** OLED to show service/status info with **rotating
 - OLED refresh must be low priority and non-blocking:
   - Use short timeouts on I2C writes.
   - Cap refresh rate (e.g. max 5 Hz) and coalesce frequent updates.
+- If OLED is missing/not connected, the system must continue normally:
+  - On init, probe `0x3C` then `0x3D` and, if no ACK, mark OLED as disabled.
+  - All OLED update calls should be no-ops when disabled; no retries that block boot.
 
 ## Display architecture
 
@@ -57,6 +60,10 @@ Goal: Add a small **text-only** OLED to show service/status info with **rotating
   - `sys_diag` (SAFE + reset reason + boot count)
   - `led_status` (brightness)
   - `bsp_extra_codec` (volume)
+- Snapshot sync (pick one and be consistent):
+  - Mutex-protected copy/update (simple): setters take a mutex, update fields, set a dirty flag.
+  - Or lock-free double buffer: writers update a staging struct + increment version; reader copies when version changes.
+- Keep OLED module isolated: no circular includes; expose a tiny `oled_status_set_*()` API in `oled_status.h`.
 
 ### SSD1306 text-only driver
 
@@ -74,6 +81,12 @@ Goal: Add a small **text-only** OLED to show service/status info with **rotating
   - “Dirty refresh” when any critical snapshot field changes.
   - Rate limit refresh (e.g. 200 ms minimum between flushes).
   - If OLED init fails (no ACK on `0x3C/0x3D`), disable task and log once.
+- I2C timing (suggested):
+  - Per-transaction timeout: 20-30 ms.
+  - Overall refresh budget: <= 50 ms (skip frame if exceeded).
+- Dirty refresh thresholds:
+  - Numeric deltas (RSSI change >= 3 dB, heap change >= 10 KB).
+  - State changes always trigger (HA/MQTT up/down, VA state, OTA state).
 
 ## Page layout (16x8, ASCII only)
 
@@ -176,4 +189,3 @@ Idle behavior:
 Hysteresis (anti-flicker):
 - Switch to `CONNECTING` only after ~`3s` continuous `HA:NO`
 - Switch back to `IDLE` after ~`1s` continuous `HA:OK`
-
