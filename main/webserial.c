@@ -189,7 +189,7 @@ esp_err_t webserial_init(void) {
     
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_open_sockets = 5; // Increased for better stability
-    config.max_req_hdr_len = 2048;
+    config.max_req_hdr_len = 8192;
     
     if (httpd_start(&server, &config) == ESP_OK) {
         httpd_uri_t uris[] = {
