@@ -448,7 +448,10 @@ static void mqtt_ota_trigger_callback(const char *entity_id, const char *payload
     }
 
     ESP_LOGI(TAG, "Starting OTA from MQTT URL: %s", ota_url_value);
-    ota_update_start(ota_url_value);
+    esp_err_t err = ota_update_start(ota_url_value);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA start failed: %s", esp_err_to_name(err));
+    }
 }
 
 // VAD / Voice Pipeline Callbacks

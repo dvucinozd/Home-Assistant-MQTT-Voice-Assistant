@@ -13,6 +13,7 @@
 #include "ota_update.h"
 #include "led_status.h"
 #include "esp_log.h"
+#include "esp_err.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -164,9 +165,13 @@ static esp_err_t api_ota_handler(httpd_req_t *req) {
         char url[192];
         if (form_get_param(body, "url", url, sizeof(url))) {
             ESP_LOGI(TAG, "OTA Requested via Web: %s", url);
-            ota_update_start(url);
+            esp_err_t err = ota_update_start(url);
             httpd_resp_set_type(req, "application/json");
-            return httpd_resp_send(req, "{\"ok\":true}", 10);
+            if (err == ESP_OK) {
+                return httpd_resp_send(req, "{\"ok\":true}", 10);
+            }
+            ESP_LOGE(TAG, "OTA start failed: %s", esp_err_to_name(err));
+            return httpd_resp_send(req, "{\"ok\":false}", 11);
         }
     }
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing URL");
