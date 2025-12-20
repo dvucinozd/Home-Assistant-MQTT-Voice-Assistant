@@ -21,6 +21,7 @@
 #include "beep_tone.h"
 #include "cJSON.h"
 #include "sys_diag.h"
+#include "bsp_board_extra.h"
 
 #define TAG "voice_pipeline"
 #define FOLLOWUP_RECORDING_MS 7000
@@ -319,11 +320,14 @@ static void pipeline_task(void *arg) {
                 case PIPELINE_CMD_ALARM_BEEP:
                     ESP_LOGI(TAG, "Playing Alarm/Timer Sound!");
                     audio_capture_stop_wait(500);
+                    int prev_volume = bsp_extra_codec_volume_get();
+                    bsp_extra_codec_volume_set(100, NULL);
                     for(int i=0; i<5; i++) {
                         beep_tone_play(1000, 500, 100);
                         vTaskDelay(pdMS_TO_TICKS(500));
                         sys_diag_wdt_feed(); // Feed during long loops
                     }
+                    bsp_extra_codec_volume_set(prev_volume, NULL);
                     pipeline_post_cmd(PIPELINE_CMD_RESUME_WWD, 0);
                     break;
                 
