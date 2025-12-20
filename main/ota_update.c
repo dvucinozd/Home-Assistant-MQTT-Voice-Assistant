@@ -92,15 +92,21 @@ static void ota_update_task(void *pvParameter) {
 
   // Fetch headers
   content_length = esp_http_client_fetch_headers(client);
-  if (content_length <= 0) {
-    ESP_LOGE(TAG, "Failed to fetch headers or empty response");
-    notify_progress(OTA_STATE_FAILED, 0, "Invalid HTTP response");
+  int status = esp_http_client_get_status_code(client);
+  if (status != 200) {
+    ESP_LOGE(TAG, "HTTP status %d", status);
+    notify_progress(OTA_STATE_FAILED, 0, "HTTP status not OK");
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     goto ota_end;
   }
 
-  ESP_LOGI(TAG, "Image size: %d bytes", content_length);
+  bool length_known = (content_length > 0);
+  if (length_known) {
+    ESP_LOGI(TAG, "Image size: %d bytes", content_length);
+  } else {
+    ESP_LOGW(TAG, "Image size unknown (no Content-Length)");
+  }
 
   // Get update partition
   update_partition = esp_ota_get_next_update_partition(NULL);
@@ -127,7 +133,7 @@ static void ota_update_task(void *pvParameter) {
   }
 
   // Download and write firmware
-  while (total_read < content_length) {
+  while (1) {
     int read_len = esp_http_client_read(client, buffer, buffer_size);
     if (read_len < 0) {
       ESP_LOGE(TAG, "HTTP read error");
@@ -153,10 +159,15 @@ static void ota_update_task(void *pvParameter) {
     }
 
     total_read += read_len;
-    int progress = (total_read * 100) / content_length;
     char msg[64];
-    snprintf(msg, sizeof(msg), "Downloading: %d/%d bytes", total_read,
-             content_length);
+    int progress = 0;
+    if (length_known) {
+      progress = (total_read * 100) / content_length;
+      snprintf(msg, sizeof(msg), "Downloading: %d/%d bytes", total_read,
+               content_length);
+    } else {
+      snprintf(msg, sizeof(msg), "Downloading: %d bytes", total_read);
+    }
     notify_progress(OTA_STATE_DOWNLOADING, progress, msg);
   }
 
@@ -165,7 +176,14 @@ static void ota_update_task(void *pvParameter) {
   esp_http_client_cleanup(client);
 
   // Verify complete download
-  if (total_read != content_length) {
+  if (total_read == 0) {
+    ESP_LOGE(TAG, "Download failed: no data received");
+    notify_progress(OTA_STATE_FAILED, ota_progress, "No data received");
+    esp_ota_abort(ota_handle);
+    goto ota_end;
+  }
+
+  if (length_known && total_read != content_length) {
     ESP_LOGE(TAG, "Incomplete download: %d/%d", total_read, content_length);
     notify_progress(OTA_STATE_FAILED, ota_progress, "Incomplete download");
     esp_ota_abort(ota_handle);
