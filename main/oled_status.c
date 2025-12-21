@@ -261,13 +261,22 @@ static esp_err_t oled_write_cmds(const uint8_t *cmds, size_t len) {
     if (!cmds || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    uint8_t buf[16];
-    if (len > (sizeof(buf) - 1)) {
-        return ESP_ERR_INVALID_ARG;
+    size_t offset = 0;
+    while (offset < len) {
+        uint8_t buf[16];
+        size_t chunk = len - offset;
+        if (chunk > (sizeof(buf) - 1)) {
+            chunk = sizeof(buf) - 1;
+        }
+        buf[0] = 0x00;
+        memcpy(&buf[1], cmds + offset, chunk);
+        esp_err_t ret = oled_write(buf, chunk + 1);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        offset += chunk;
     }
-    buf[0] = 0x00;
-    memcpy(&buf[1], cmds, len);
-    return oled_write(buf, len + 1);
+    return ESP_OK;
 }
 
 static esp_err_t oled_flush(void) {
@@ -325,7 +334,7 @@ static esp_err_t oled_init_device(uint8_t addr) {
 }
 
 static void render_page_overview(const oled_status_snapshot_t *snap) {
-    char line[17];
+    char line[64];
 
     const char *mode = snap->safe_mode ? "SAFE" : "NORM";
     const char *va = "IDLE";
@@ -421,7 +430,7 @@ static void render_page_overview(const oled_status_snapshot_t *snap) {
 
 static void render_page_network(const oled_status_snapshot_t *snap) {
     (void)snap;
-    char line[17];
+    char line[64];
 
     network_type_t net_type = network_manager_get_active_type();
     const char *net = "OFF";
@@ -490,7 +499,7 @@ static void render_page_network(const oled_status_snapshot_t *snap) {
 }
 
 static void render_page_pipeline(const oled_status_snapshot_t *snap) {
-    char line[17];
+    char line[64];
 
     const char *ha = snap->ha_connected ? "OK" : "NO";
     const char *aud = ha_client_is_audio_ready() ? "OK" : "NO";
@@ -552,7 +561,7 @@ static void render_page_pipeline(const oled_status_snapshot_t *snap) {
 }
 
 static void render_page_audio(const oled_status_snapshot_t *snap) {
-    char line[17];
+    char line[64];
 
     int vol = bsp_extra_codec_volume_get();
     int led = led_status_get_brightness();

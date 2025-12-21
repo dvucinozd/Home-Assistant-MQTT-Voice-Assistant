@@ -19,6 +19,7 @@
 #include "driver/i2s_types.h"
 #include "audio_ref_buffer.h"
 #include "sys_diag.h" // Phase 9
+#include "esp_heap_caps.h"
 
 static const char *TAG = "audio_capture";
 
@@ -28,6 +29,23 @@ static const char *TAG = "audio_capture";
 #define CAPTURE_TASK_PRIORITY 6
 #define CAPTURE_TASK_CORE   0
 #define I2S_READ_LEN 512 
+
+#define FETCH_STACK_DEFAULT 16384
+#define FEED_STACK_DEFAULT 8192
+
+static bool create_pinned_task(TaskFunction_t task, const char *name, int stack_words,
+                               void *arg, UBaseType_t priority, TaskHandle_t *handle,
+                               BaseType_t core_id) {
+    BaseType_t ret = xTaskCreatePinnedToCore(task, name, stack_words, arg, priority, handle, core_id);
+    if (ret == pdPASS) {
+        return true;
+    }
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGW(TAG, "Task %s create failed (stack=%d). Free internal=%u, psram=%u",
+             name, stack_words, (unsigned)free_internal, (unsigned)free_psram);
+    return false;
+}
 
 // -------------------------------------------------------------------------
 // STATE VARIABLES
@@ -260,13 +278,23 @@ esp_err_t audio_capture_start(audio_capture_callback_t callback) {
     }
 
     // Increase stack for MultiNet processing
-    if (xTaskCreatePinnedToCore(feed_task, "afe_feed", 8192, NULL, CAPTURE_TASK_PRIORITY, &feed_task_handle, CAPTURE_TASK_CORE) != pdPASS) {
+    if (!create_pinned_task(feed_task, "afe_feed", FEED_STACK_DEFAULT, NULL,
+                            CAPTURE_TASK_PRIORITY, &feed_task_handle, CAPTURE_TASK_CORE)) {
         ESP_LOGE(TAG, "Failed to create feed task");
         is_running = false;
         current_mode = CAPTURE_MODE_IDLE;
         return ESP_FAIL;
     }
-    if (xTaskCreatePinnedToCore(fetch_task, "afe_fetch", 16384, NULL, AFE_TASK_PRIORITY, &fetch_task_handle, AFE_TASK_CORE) != pdPASS) {
+    const int fetch_stacks[] = {FETCH_STACK_DEFAULT, 12288, 8192};
+    bool fetch_ok = false;
+    for (size_t i = 0; i < sizeof(fetch_stacks) / sizeof(fetch_stacks[0]); i++) {
+        if (create_pinned_task(fetch_task, "afe_fetch", fetch_stacks[i], NULL,
+                               AFE_TASK_PRIORITY, &fetch_task_handle, AFE_TASK_CORE)) {
+            fetch_ok = true;
+            break;
+        }
+    }
+    if (!fetch_ok) {
         ESP_LOGE(TAG, "Failed to create fetch task");
         is_running = false;
         current_mode = CAPTURE_MODE_IDLE;
@@ -290,13 +318,23 @@ esp_err_t audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t callba
         xEventGroupClearBits(capture_event_group, CAPTURE_FEED_DONE_BIT | CAPTURE_FETCH_DONE_BIT);
     }
 
-    if (xTaskCreatePinnedToCore(feed_task, "afe_feed", 8192, NULL, CAPTURE_TASK_PRIORITY, &feed_task_handle, CAPTURE_TASK_CORE) != pdPASS) {
+    if (!create_pinned_task(feed_task, "afe_feed", FEED_STACK_DEFAULT, NULL,
+                            CAPTURE_TASK_PRIORITY, &feed_task_handle, CAPTURE_TASK_CORE)) {
         ESP_LOGE(TAG, "Failed to create feed task");
         is_running = false;
         current_mode = CAPTURE_MODE_IDLE;
         return ESP_FAIL;
     }
-    if (xTaskCreatePinnedToCore(fetch_task, "afe_fetch", 16384, NULL, AFE_TASK_PRIORITY, &fetch_task_handle, AFE_TASK_CORE) != pdPASS) {
+    const int fetch_stacks[] = {FETCH_STACK_DEFAULT, 12288, 8192};
+    bool fetch_ok = false;
+    for (size_t i = 0; i < sizeof(fetch_stacks) / sizeof(fetch_stacks[0]); i++) {
+        if (create_pinned_task(fetch_task, "afe_fetch", fetch_stacks[i], NULL,
+                               AFE_TASK_PRIORITY, &fetch_task_handle, AFE_TASK_CORE)) {
+            fetch_ok = true;
+            break;
+        }
+    }
+    if (!fetch_ok) {
         ESP_LOGE(TAG, "Failed to create fetch task");
         is_running = false;
         current_mode = CAPTURE_MODE_IDLE;
