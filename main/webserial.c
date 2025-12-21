@@ -17,6 +17,7 @@
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <stdlib.h>
@@ -179,9 +180,9 @@ static esp_err_t logs_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "text/plain");
     char header[16];
-    snprintf(header, sizeof(header), "%u", seq);
+    snprintf(header, sizeof(header), "%" PRIu32, seq);
     httpd_resp_set_hdr(req, "X-Log-Seq", header);
-    snprintf(header, sizeof(header), "%u", base);
+    snprintf(header, sizeof(header), "%" PRIu32, base);
     httpd_resp_set_hdr(req, "X-Log-Base", header);
     if (reset) {
         httpd_resp_set_hdr(req, "X-Log-Reset", "1");
