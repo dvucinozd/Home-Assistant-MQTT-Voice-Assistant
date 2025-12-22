@@ -28,11 +28,14 @@ Thank you for your interest in contributing! Please follow these guidelines.
 
 ## Before Submitting Changes
 
-1. **Update version** in `CMakeLists.txt` if adding new features
+1. **Update version** in `CMakeLists.txt` (`PROJECT_VER`) if adding new features
 2. **Test thoroughly** on JC-ESP32P4-M3-DEV hardware
-3. **Update README.md** if adding new MQTT entities or features
+3. **Update docs**:
+   - `README.md` if adding new MQTT entities or user-facing behavior
+   - `docs/` if changing WakeNet/OLED/technical details
 4. **Check serial logs** for any warnings or errors
-5. **Add CHANGELOG entry** in CHANGELOG.md
+5. **Add CHANGELOG entry** in `CHANGELOG.md`
+6. **Never commit secrets**: `main/config.h` must stay local (it is in `.gitignore`)
 
 ## Code Style
 
