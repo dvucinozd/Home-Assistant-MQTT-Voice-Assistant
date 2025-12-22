@@ -1,0 +1,49 @@
+/**
+ * ESP32-P4 Voice Assistant Configuration Template
+ *
+ * Copy this file to config.h and update with your credentials.
+ *
+ * IMPORTANT:
+ * - Do not commit `main/config.h` (it is in `.gitignore`).
+ */
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#include <stddef.h> // NULL
+
+/* ============================================================================
+ * WiFi Configuration
+ * ============================================================================ */
+#define WIFI_SSID "YourNetworkName"
+#define WIFI_PASSWORD "YourPassword"
+#define WIFI_MAX_RETRY 5
+
+/* ============================================================================
+ * Home Assistant Configuration
+ * ============================================================================ */
+#define HA_HOSTNAME "homeassistant.local"  // mDNS hostname or IP address
+#define HA_PORT 8123                       // Default HA port
+#define HA_TOKEN "your_long_lived_access_token_here"
+#define HA_USE_SSL false                   // Set true if using HTTPS
+#define HA_WEBSOCKET_PATH "/api/websocket"
+
+/* ============================================================================
+ * MQTT Configuration (Home Assistant Discovery)
+ * ============================================================================ */
+#define MQTT_BROKER_URI "mqtt://homeassistant.local:1883"
+
+// Set to NULL if your broker doesn't use auth.
+#define MQTT_USERNAME NULL
+#define MQTT_PASSWORD NULL
+
+#define MQTT_CLIENT_ID "esp32p4_voice_assistant"
+
+/* ============================================================================
+ * Notes
+ * ============================================================================ */
+// Audio pins (I2S/I2C), SDIO pins, etc. are configured by the bundled BSP component
+// for the JC-ESP32P4-M3-DEV board profile. If you port to a different board, update
+// the BSP pin mapping instead of editing this file.
+
+#endif // CONFIG_H

@@ -1,0 +1,46 @@
+# Build artifacts
+build/
+dist/
+out/
+*.bin
+*.elf
+*.map
+
+# Dependencies
+dependencies.lock
+managed_components/
+!managed_components/.component_hash
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local caches
+.cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# ESP-IDF
+sdkconfig.old
+sdkconfig.backup
+
+# Credentials (IMPORTANT: Never commit!)
+main/config.h
+esphome/secrets.yaml
+secrets.yaml
+.env
+.env.*
+
+# Windows specific
+nul

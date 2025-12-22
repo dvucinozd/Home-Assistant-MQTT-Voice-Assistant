@@ -1,0 +1,9 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# OTA-enabled partition table for ESP32-P4 Voice Assistant (16MB flash)
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+otadata,  data, ota,     0x10000, 0x2000,
+ota_0,    app,  ota_0,   0x20000, 3M,
+ota_1,    app,  ota_1,   ,        3M,
+model,    data, spiffs,  ,        4M,
+storage,  data, spiffs,  ,        2M,
