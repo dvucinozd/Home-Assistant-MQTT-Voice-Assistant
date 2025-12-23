@@ -33,6 +33,10 @@ static bool ethernet_available = false;
 static bool wifi_fallback_active = false;
 static network_event_callback_t event_callback = NULL;
 
+static void esp_hosted_log_suppress(bool suppress) {
+    esp_log_level_set("H_API", suppress ? ESP_LOG_NONE : ESP_LOG_ERROR);
+}
+
 // Ethernet driver handles
 static esp_eth_handle_t eth_handle = NULL;
 static esp_netif_t *eth_netif = NULL;
@@ -63,6 +67,7 @@ static TaskHandle_t wifi_fallback_task_handle = NULL;
 
 // Helper to start WiFi with stored credentials
 static esp_err_t start_wifi_fallback(void) {
+    esp_hosted_log_suppress(false);
     app_settings_t settings;
     if (settings_manager_load(&settings) != ESP_OK) {
         ESP_LOGW(TAG, "Failed to load WiFi settings for fallback, using empty credentials");
@@ -209,6 +214,7 @@ static void ethernet_event_handler(void *arg, esp_event_base_t event_base,
     switch (event_id) {
     case ETHERNET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "Ethernet cable connected");
+        esp_hosted_log_suppress(true);
 
         // If WiFi fallback was active, stop it
         if (wifi_fallback_active && wifi_manager_is_active()) {
@@ -220,6 +226,7 @@ static void ethernet_event_handler(void *arg, esp_event_base_t event_base,
 
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Ethernet cable disconnected");
+        esp_hosted_log_suppress(false);
 
         // Mark Ethernet as inactive
         if (active_network == NETWORK_TYPE_ETHERNET) {

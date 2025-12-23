@@ -33,6 +33,10 @@ static const char *TAG = "audio_capture";
 #define FETCH_STACK_DEFAULT 16384
 #define FEED_STACK_DEFAULT 8192
 
+static void fetch_task(void *arg);
+static StackType_t *fetch_stack_mem = NULL;
+static StaticTask_t *fetch_tcb_mem = NULL;
+
 static bool create_pinned_task(TaskFunction_t task, const char *name, int stack_words,
                                void *arg, UBaseType_t priority, TaskHandle_t *handle,
                                BaseType_t core_id) {
@@ -44,6 +48,73 @@ static bool create_pinned_task(TaskFunction_t task, const char *name, int stack_
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     ESP_LOGW(TAG, "Task %s create failed (stack=%d). Free internal=%u, psram=%u",
              name, stack_words, (unsigned)free_internal, (unsigned)free_psram);
+    return false;
+}
+
+static bool create_pinned_task_psram(TaskFunction_t task, const char *name, int stack_words,
+                                     void *arg, UBaseType_t priority, TaskHandle_t *handle,
+                                     BaseType_t core_id) {
+    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
+        task, name, stack_words, arg, priority, handle, core_id,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (ret == pdPASS) {
+        ESP_LOGI(TAG, "Task %s created in PSRAM (stack=%d)", name, stack_words);
+        return true;
+    }
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGW(TAG, "Task %s PSRAM create failed (stack=%d). Free internal=%u, psram=%u",
+             name, stack_words, (unsigned)free_internal, (unsigned)free_psram);
+    return false;
+}
+
+static bool create_pinned_task_static(TaskFunction_t task, const char *name, int stack_words,
+                                      void *arg, UBaseType_t priority, TaskHandle_t *handle,
+                                      BaseType_t core_id) {
+    size_t stack_bytes = (size_t)stack_words * sizeof(StackType_t);
+    StackType_t *stack = heap_caps_malloc(stack_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    StaticTask_t *tcb = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!stack || !tcb) {
+        ESP_LOGW(TAG, "Static task alloc failed (stack=%d) stack=%p tcb=%p",
+                 stack_words, stack, tcb);
+        free(stack);
+        free(tcb);
+        return false;
+    }
+
+    TaskHandle_t created = xTaskCreateStaticPinnedToCore(task, name, stack_words, arg,
+                                                         priority, stack, tcb, core_id);
+    if (!created) {
+        ESP_LOGW(TAG, "Static task create failed (stack=%d)", stack_words);
+        free(stack);
+        free(tcb);
+        return false;
+    }
+
+    fetch_stack_mem = stack;
+    fetch_tcb_mem = tcb;
+    *handle = created;
+    ESP_LOGI(TAG, "Task %s created with static PSRAM stack (stack=%d)", name, stack_words);
+    return true;
+}
+
+static bool create_fetch_task(TaskHandle_t *handle) {
+    const int fetch_stacks[] = {FETCH_STACK_DEFAULT, 12288, 8192};
+    for (size_t i = 0; i < sizeof(fetch_stacks) / sizeof(fetch_stacks[0]); i++) {
+        ESP_LOGI(TAG, "Creating fetch task (stack=%d)", fetch_stacks[i]);
+        if (create_pinned_task(fetch_task, "afe_fetch", fetch_stacks[i], NULL,
+                               AFE_TASK_PRIORITY, handle, AFE_TASK_CORE)) {
+            return true;
+        }
+        if (create_pinned_task_psram(fetch_task, "afe_fetch", fetch_stacks[i], NULL,
+                                     AFE_TASK_PRIORITY, handle, AFE_TASK_CORE)) {
+            return true;
+        }
+        if (create_pinned_task_static(fetch_task, "afe_fetch", fetch_stacks[i], NULL,
+                                      AFE_TASK_PRIORITY, handle, AFE_TASK_CORE)) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -189,6 +260,13 @@ static void fetch_task(void *arg) {
     }
     if (capture_event_group) xEventGroupSetBits(capture_event_group, CAPTURE_FETCH_DONE_BIT);
     fetch_task_handle = NULL;
+    if (fetch_stack_mem || fetch_tcb_mem) {
+        ESP_LOGI(TAG, "Freeing fetch task static memory");
+        free(fetch_stack_mem);
+        free(fetch_tcb_mem);
+        fetch_stack_mem = NULL;
+        fetch_tcb_mem = NULL;
+    }
     sys_diag_wdt_remove();
     vTaskDelete(NULL);
 }
@@ -285,16 +363,7 @@ esp_err_t audio_capture_start(audio_capture_callback_t callback) {
         current_mode = CAPTURE_MODE_IDLE;
         return ESP_FAIL;
     }
-    const int fetch_stacks[] = {FETCH_STACK_DEFAULT, 12288, 8192};
-    bool fetch_ok = false;
-    for (size_t i = 0; i < sizeof(fetch_stacks) / sizeof(fetch_stacks[0]); i++) {
-        if (create_pinned_task(fetch_task, "afe_fetch", fetch_stacks[i], NULL,
-                               AFE_TASK_PRIORITY, &fetch_task_handle, AFE_TASK_CORE)) {
-            fetch_ok = true;
-            break;
-        }
-    }
-    if (!fetch_ok) {
+    if (!create_fetch_task(&fetch_task_handle)) {
         ESP_LOGE(TAG, "Failed to create fetch task");
         is_running = false;
         current_mode = CAPTURE_MODE_IDLE;
@@ -325,16 +394,7 @@ esp_err_t audio_capture_start_wake_word_mode(audio_capture_wwd_callback_t callba
         current_mode = CAPTURE_MODE_IDLE;
         return ESP_FAIL;
     }
-    const int fetch_stacks[] = {FETCH_STACK_DEFAULT, 12288, 8192};
-    bool fetch_ok = false;
-    for (size_t i = 0; i < sizeof(fetch_stacks) / sizeof(fetch_stacks[0]); i++) {
-        if (create_pinned_task(fetch_task, "afe_fetch", fetch_stacks[i], NULL,
-                               AFE_TASK_PRIORITY, &fetch_task_handle, AFE_TASK_CORE)) {
-            fetch_ok = true;
-            break;
-        }
-    }
-    if (!fetch_ok) {
+    if (!create_fetch_task(&fetch_task_handle)) {
         ESP_LOGE(TAG, "Failed to create fetch task");
         is_running = false;
         current_mode = CAPTURE_MODE_IDLE;

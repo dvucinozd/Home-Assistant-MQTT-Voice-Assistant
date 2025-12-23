@@ -54,6 +54,7 @@ static void mqtt_metrics_task(void *arg);
 static bool get_wifi_rssi(int *out_rssi);
 static void ota_progress_handler(ota_state_t state, int progress, const char *message);
 static void led_ready_task(void *arg);
+static void sdcard_release_for_wifi_fallback(void);
 
 typedef enum {
     MUSIC_CMD_PLAY = 0,
@@ -259,7 +260,7 @@ static void post_connect_task(void *arg) {
     webserial_init();
 
     // SD/music init can be slow; keep it out of the network event loop task.
-    if (!sys_diag_is_safe_mode() && !sd_init_done) {
+    if (!sys_diag_is_safe_mode() && !sd_init_done && type == NETWORK_TYPE_ETHERNET) {
         if (bsp_sdcard_mount() == ESP_OK) {
             ESP_LOGI(TAG, "SD Card mounted");
             local_music_player_init();
@@ -534,7 +535,7 @@ static void mqtt_setup_task(void *arg) {
     mqtt_ha_register_sensor("wifi_rssi", "WiFi Signal", "dBm", "signal_strength");
     mqtt_ha_register_sensor("wifi_signal", "WiFi Signal", "dBm", "signal_strength");
     mqtt_ha_register_sensor("ip_address", "IP Address", NULL, NULL);
-    mqtt_ha_register_sensor("free_memory", "Free Memory", "bytes", "data_size");
+    mqtt_ha_register_sensor("free_memory", "Free Memory", "B", "data_size");
     mqtt_ha_register_sensor("uptime", "Uptime", "s", NULL);
     mqtt_ha_register_sensor("firmware_version", "Firmware Version", NULL, NULL);
     mqtt_ha_register_sensor("network_type", "Network Type", NULL, NULL);
@@ -626,6 +627,7 @@ static void network_event_callback(network_type_t type, bool connected) {
         }
     } else {
         if (type == NETWORK_TYPE_ETHERNET) {
+            sdcard_release_for_wifi_fallback();
             oled_status_set_last_event("eth-down");
         } else if (type == NETWORK_TYPE_WIFI) {
             oled_status_set_last_event("wifi-down");
@@ -675,6 +677,23 @@ static void led_ready_task(void *arg) {
 
         vTaskDelay(pdMS_TO_TICKS(200));
     }
+}
+
+static void sdcard_release_for_wifi_fallback(void) {
+    if (bsp_sdcard == NULL) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Releasing SD card for WiFi fallback");
+    if (local_music_player_is_initialized()) {
+        local_music_player_deinit();
+    }
+
+    esp_err_t ret = bsp_sdcard_unmount();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SD card unmount failed: %s", esp_err_to_name(ret));
+    }
+    sd_init_done = false;
 }
 
 void app_main(void) {

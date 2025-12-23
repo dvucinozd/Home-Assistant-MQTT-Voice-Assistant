@@ -14,6 +14,7 @@ Local voice assistant firmware for Home Assistant, built natively on ESP-IDF for
 - Home Assistant Assist pipeline via WebSocket: STT/intent/TTS events + audio streaming.
 - Local timer fallback: if HA does not support timers (or intent parsing fails), the firmware tries to extract duration from STT text (Croatian keywords like "timer/tajmer/odbrojavanje").
 - Local MP3 player from SD card; voice pipeline pauses/stops WWD during music to avoid codec/I2S conflicts.
+- Ethernet priority with Wi-Fi fallback; SD card is unmounted when switching to Wi-Fi to free SDIO.
 - MQTT Home Assistant Discovery: sensors + controls (WWD, AGC, LED, volume, VAD tuning, OTA).
 - OTA updates: URL input + "Start OTA" via HA/MQTT and OTA via the web dashboard; validates HTTP status and works even without `Content-Length`.
 - Web dashboard + WebSerial (real-time logs) at `http://<device-ip>/` and `http://<device-ip>/webserial`.
@@ -177,6 +178,7 @@ If you renamed entity IDs previously: the firmware clears some legacy retained d
 
 By default, models live in the flash `model` partition (`partitions.csv`) and the build produces `build/srmodels/srmodels.bin`.
 Optionally you can load WakeNet models from SD card. See `docs/WAKENET_SD_CARD_SETUP.md`.
+Note: ESP-Hosted Wi-Fi uses the same SDIO lines as the SD card. Wi-Fi fallback requires the SD card to be unmounted (and in some cases physically removed).
 
 ---
 
@@ -229,6 +231,7 @@ LED statuses are implemented in `main/led_status.c` and tied to VA/OTA events.
 
 - LED stays red: Safe Mode (boot-loop protection). OTA + web dashboard should still be available; check serial logs.
 - `WWD audio stats ... peak=0`: check codec open errors and that `bsp_extra_codec_set_fs()` succeeds (WakeNet requires 16 kHz mono).
+- Wi-Fi fallback not working: ensure SD card is unmounted (SDIO conflict with ESP-Hosted); remove the card if needed.
 - No MQTT entities in HA: verify broker URI/credentials in `main/config.h`/NVS and that the MQTT integration is enabled.
 - Duplicate entities after renaming: reload MQTT integration in HA or clear retained discovery topics on the broker.
 - Audio too loud: use the `output_volume` number entity (stored in NVS).
