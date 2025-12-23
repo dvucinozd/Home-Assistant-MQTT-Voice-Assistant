@@ -1,6 +1,9 @@
 # Instructions for connecting to Home Assistant via MCP
 
-This document describes a proven procedure for another AI agent to fetch logs or other data from Home Assistant. This repo does not contain MCP server scripts; use `help_scripts/` or your own MCP server if you already have one.
+This document describes a proven procedure for another AI agent to fetch logs or other data from Home Assistant.
+
+This repo now includes a small MCP server you can run locally:
+- `help_scripts/ha_mcp_server.py` (Home Assistant REST/WS tools + optional local ESPHome YAML helpers)
 
 ## 1. Prerequisites
 
@@ -28,27 +31,40 @@ This document describes a proven procedure for another AI agent to fetch logs or
 
 ### 3.1 Bash/WSL
 
-This repo does not include MCP server scripts. If you use an external MCP server, start it per its instructions.
+You can run the bundled server from any shell that has Python + `mcp` installed.
 
 ### 3.2 Windows PowerShell
 
-If Git Bash cannot see `mcp.exe`, start the server directly (per the MCP server documentation you use).
+Set environment variables and start the server:
+
+```powershell
+$env:HOME_ASSISTANT_BASE_URL = 'http://kucni.local:9000'
+$env:HOME_ASSISTANT_TOKEN = '...'
+$env:HOME_ASSISTANT_VERIFY_SSL = '1'
+
+# Optional: point to your local ESPHome YAML folder (e.g. a checkout or a SMB-mapped \\HA\config\esphome)
+$env:ESPHOME_DIR = 'D:\esphome'
+
+mcp dev help_scripts/ha_mcp_server.py:server
+```
 
 ### 3.3 Inspecting via MCP Inspector
 
 In another terminal:
 
 ```bash
-mcp dev <path_to_mcp_server_module>:server
+mcp dev help_scripts/ha_mcp_server.py:server
 ```
 
 The console prints a local URL and token for FastMCP Inspector; keep the process running while you inspect.
 
 ## 4. Typical tools available to the agent
 
-- `list_home_assistant_entities(domain?, search?, limit?, attribute_filter?)`
-- `get_home_assistant_state(entity_id)`
-- `call_home_assistant_service(domain, service, entity_id?, service_data?)`
+- `home_assistant_list_states(domain?, search?, limit?, include_attributes?)`
+- `home_assistant_get_state(entity_id)`
+- `home_assistant_call_service(domain, service, entity_id?, service_data?)`
+- `home_assistant_system_log_list(limit?, search?, levels?)`
+- (optional, local) `esphome_list_yaml(esphome_dir?)`, `esphome_read_yaml(filename, esphome_dir?)`, `esphome_write_yaml(...)`, `esphome_run_cli(args, esphome_dir?)`
 
 All use the REST API, so valid secrets are enough.
 
