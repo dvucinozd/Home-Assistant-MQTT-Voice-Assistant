@@ -8,7 +8,7 @@ This server exposes:
 - Optional local ESPHome YAML file helpers (read/write/list)
 
 Secrets are provided via environment variables (recommended):
-- HOME_ASSISTANT_BASE_URL  e.g. http://kucni.local:9000  (no trailing slash)
+- HOME_ASSISTANT_BASE_URL  e.g. http://<HA_HOST>:9000  (no trailing slash)
 - HOME_ASSISTANT_TOKEN     long-lived access token
 - HOME_ASSISTANT_VERIFY_SSL  1/0/true/false (default: true)
 
@@ -340,4 +340,3 @@ def esphome_run_cli(
 
 if __name__ == "__main__":
     server.run()
-

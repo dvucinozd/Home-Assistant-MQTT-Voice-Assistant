@@ -38,7 +38,7 @@ You can run the bundled server from any shell that has Python + `mcp` installed.
 Set environment variables and start the server:
 
 ```powershell
-$env:HOME_ASSISTANT_BASE_URL = 'http://kucni.local:9000'
+$env:HOME_ASSISTANT_BASE_URL = 'http://<HA_HOST>:9000'
 $env:HOME_ASSISTANT_TOKEN = '...'
 $env:HOME_ASSISTANT_VERIFY_SSL = '1'
 
