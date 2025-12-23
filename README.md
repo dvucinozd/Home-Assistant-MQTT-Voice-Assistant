@@ -218,14 +218,14 @@ LED statuses are implemented in `main/led_status.c` and tied to VA/OTA events.
 
 | Status | Color | Effect | Period |
 |--------|-------|--------|--------|
-| `BOOTING` | yellow | solid | - |
-| `IDLE` | green (dim) | solid | - |
-| `LISTENING` | blue | pulsing | 1000ms |
-| `PROCESSING` | yellow | blinking | 500ms |
-| `SPEAKING` | cyan | fast pulsing | 300ms |
-| `OTA` | white | fast pulsing | 300ms |
-| `ERROR` | red | fast blinking | 200ms |
-| `CONNECTING` | purple | breathing | 2000ms |
+| `BOOTING` | 🟡 | solid | - |
+| `IDLE` | 🟢 | solid | - |
+| `LISTENING` | 🔵 | pulsing | 1000ms |
+| `PROCESSING` | 🟡 | blinking | 500ms |
+| `SPEAKING` | 🔵 | fast pulsing | 300ms |
+| `OTA` | ⚪ | fast pulsing | 300ms |
+| `ERROR` | 🔴 | fast blinking | 200ms |
+| `CONNECTING` | 🟣 | breathing | 2000ms |
 
 ---
 
