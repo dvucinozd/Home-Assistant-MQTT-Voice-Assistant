@@ -9,6 +9,23 @@ Context
 - OTA binary: `build/esp32_p4_voice_assistant.bin`.
 - OTA URL (local server): `http://<PC_IP>:8080/build/esp32_p4_voice_assistant.bin` (`ota_server.bat` prints the URL).
 
+Recent fixes (Dec 24, 2025)
+---------------------------
+### Comprehensive Bug Fixes (v0.1.9)
+- **Critical Memory Safety**: 
+    - Fixed use-after-free in `fetch_task` (moved cleanup to `audio_capture_stop_wait`).
+    - Fixed memory leaks in `voice_pipeline.c` (`current_pipeline_handler`), `ha_client.c` (`audio_frame_buf`), and `ha_client_start_conversation` (missing malloc check).
+    - Fixed race conditions with `callback_mux` spinlock in `ha_client.c` and `is_running` flag in `audio_capture.c`.
+    - Added missing null checks for `cJSON_PrintUnformatted` and `malloc`.
+- **Functionality**:
+    - **AGC**: Stub functions now correctly return `false`/`ESP_ERR_NOT_SUPPORTED` instead of misleading success.
+    - **TTS**: Buffer overflow warning now includes size information (`used/max`).
+    - **Cleanup**: Proper null termination for `strncpy` in MQTT handlers.
+- **Code Quality**:
+    - Removed redundant `extern` declarations from `tts_player.c` and `beep_tone.c`.
+    - Replaced magic numbers with named constants (`BEEP_WAKE_*`, `BEEP_CONFIRM_*`, `BEEP_ERROR_*`).
+    - Removed conflicting "Local Time Question" feature (now handled via LLM system prompt).
+
 Recent fixes (Dec 20, 2025)
 ---------------------------
 ### OTA + WebSerial reliability
