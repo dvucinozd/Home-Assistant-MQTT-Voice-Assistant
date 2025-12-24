@@ -649,6 +649,10 @@ char *ha_client_start_conversation(void) {
   }
 
   char *hid = malloc(32);
+  if (!hid) {
+    ESP_LOGE(TAG, "Failed to allocate handler ID");
+    return NULL;
+  }
   snprintf(hid, 32, "run_%d", last_run_message_id);
   return hid;
 }
