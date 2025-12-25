@@ -145,7 +145,9 @@ static void led_status_set_guarded(led_status_t status);
 static void pipeline_post_cmd(pipeline_cmd_type_t type, int data) {
   if (pipeline_cmd_queue) {
     pipeline_cmd_t cmd = {.type = type, .data = data};
-    xQueueSend(pipeline_cmd_queue, &cmd, 0);
+    if (xQueueSend(pipeline_cmd_queue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+      ESP_LOGE(TAG, "Command queue full, dropped cmd %d", type);
+    }
   }
 }
 

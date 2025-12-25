@@ -9,6 +9,16 @@ Context
 - OTA binary: `build/esp32_p4_voice_assistant.bin`.
 - OTA URL (local server): `http://<PC_IP>:8080/build/esp32_p4_voice_assistant.bin` (`ota_server.bat` prints the URL).
 
+Recent fixes (Dec 25, 2025)
+---------------------------
+### Music Persistence & Reliability (v0.2.0)
+- **Local Music Player**:
+    - Fixed race condition where "Play Music" command failed if SD card wasn't fully ready at boot.
+    - Added auto-initialization check: if player is not ready when "Play Music" is called, it attempts to initialize immediately.
+- **Voice Pipeline**:
+    - Increased `pipeline_cmd_queue` send timeout from 0 to 100ms to prevent dropping critical commands (like STOP_WWD) when the system is busy.
+    - Improved robustness of music pipeline switching logic.
+
 Recent fixes (Dec 24, 2025)
 ---------------------------
 ### Comprehensive Bug Fixes (v0.1.9)
