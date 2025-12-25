@@ -176,6 +176,7 @@ esp_err_t voice_pipeline_init(void) {
     return ESP_ERR_NO_MEM;
 
   // Initialize Audio Capture (includes AFE/WWD/MultiNet)
+  audio_capture_stop_wait(100); // Ensure clean state
   esp_err_t audio_init_ret = audio_capture_init();
   if (audio_init_ret != ESP_OK) {
     ESP_LOGE(TAG, "audio_capture_init() failed: %s",
@@ -199,7 +200,7 @@ esp_err_t voice_pipeline_init(void) {
 
   // Start the manager task
   // Start the manager task
-  xTaskCreate(pipeline_task, "voice_pipeline", 8192, NULL, 5,
+  xTaskCreate(pipeline_task, "voice_pipeline", 12288, NULL, 5,
               &pipeline_task_handle);
 
   return ESP_OK;

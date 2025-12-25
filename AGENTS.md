@@ -29,6 +29,11 @@ Recent fixes (Dec 25, 2025)
     - Increased `pipeline_task` stack size from 4KB to 8KB to prevent stack overflow crashes during music playback (file I/O + codec operations).
     - Added watchdog feeding (`sys_diag_wdt_feed()`) during heavy music initialization steps to prevent WDT resets.
 
+### Critical Stability Fix (v0.2.3)
+- **Voice Pipeline**:
+    - Further increased `pipeline_task` stack size to 12KB. 8KB proved insufficient for simultaneous file operations and text-to-speech handling.
+    - Added `audio_capture_stop_wait` during initialization to ensure clean audio state.
+
 Recent fixes (Dec 24, 2025)
 ---------------------------
 ### Comprehensive Bug Fixes (v0.1.9)
