@@ -14,10 +14,10 @@ extern "C" {
 #endif
 
 typedef struct {
-    const char *hostname;
-    int port;
-    const char *access_token;
-    bool use_ssl;
+  const char *hostname;
+  int port;
+  const char *access_token;
+  bool use_ssl;
 } ha_client_config_t;
 
 /**
@@ -38,7 +38,7 @@ esp_err_t ha_client_init(const ha_client_config_t *config);
 
 // Wrapper for backward compatibility or simple use
 static inline esp_err_t ha_client_init_legacy(void) {
-    return ESP_ERR_NOT_SUPPORTED; 
+  return ESP_ERR_NOT_SUPPORTED;
 }
 
 /**
@@ -77,7 +77,7 @@ esp_err_t ha_client_send_text(const char *text);
  *
  * @return conversation_id (allocated string, caller must free)
  */
-char* ha_client_start_conversation(void);
+char *ha_client_start_conversation(void);
 
 /**
  * @brief Stream audio data to Home Assistant
@@ -87,7 +87,8 @@ char* ha_client_start_conversation(void);
  * @param conversation_id Conversation ID from start_conversation
  * @return ESP_OK on success
  */
-esp_err_t ha_client_stream_audio(const uint8_t *audio_data, size_t length, const char *conversation_id);
+esp_err_t ha_client_stream_audio(const uint8_t *audio_data, size_t length,
+                                 const char *conversation_id);
 
 /**
  * @brief End audio streaming (signals recording is complete)
@@ -108,12 +109,24 @@ esp_err_t ha_client_end_audio_stream(void);
 esp_err_t ha_client_request_reconnect(const char *reason);
 
 /**
+ * @brief Ensure Home Assistant connection is ready (blocking).
+ *
+ * If already connected, returns immediately. Otherwise triggers reconnect
+ * and waits up to timeout_ms for authentication to complete.
+ *
+ * @param timeout_ms Maximum time to wait for connection (typically 3000-5000ms)
+ * @return ESP_OK if connected, ESP_ERR_TIMEOUT if connection failed
+ */
+esp_err_t ha_client_ensure_connected(uint32_t timeout_ms);
+
+/**
  * @brief Callback for conversation responses from HA
  *
  * @param response_text TTS response text from Home Assistant
  * @param conversation_id Associated conversation ID
  */
-typedef void (*ha_conversation_callback_t)(const char *response_text, const char *conversation_id);
+typedef void (*ha_conversation_callback_t)(const char *response_text,
+                                           const char *conversation_id);
 
 /**
  * @brief Callback for TTS audio data from HA
@@ -121,7 +134,8 @@ typedef void (*ha_conversation_callback_t)(const char *response_text, const char
  * @param audio_data TTS audio chunk (MP3/WAV format)
  * @param length Length of audio data in bytes
  */
-typedef void (*ha_tts_audio_callback_t)(const uint8_t *audio_data, size_t length);
+typedef void (*ha_tts_audio_callback_t)(const uint8_t *audio_data,
+                                        size_t length);
 
 /**
  * @brief Callback for pipeline errors or unexpected termination
@@ -129,16 +143,21 @@ typedef void (*ha_tts_audio_callback_t)(const uint8_t *audio_data, size_t length
  * @param error_code Error code string from HA
  * @param error_message Error message from HA
  */
-typedef void (*ha_pipeline_error_callback_t)(const char *error_code, const char *error_message);
+typedef void (*ha_pipeline_error_callback_t)(const char *error_code,
+                                             const char *error_message);
 
 /**
  * @brief Callback for intent recognition results
  *
- * @param intent_name Name of the recognized intent (e.g., "SetTimer", "CancelTimer")
- * @param intent_data JSON string with intent parameters/slots (caller must NOT free)
+ * @param intent_name Name of the recognized intent (e.g., "SetTimer",
+ * "CancelTimer")
+ * @param intent_data JSON string with intent parameters/slots (caller must NOT
+ * free)
  * @param conversation_id Associated conversation ID
  */
-typedef void (*ha_intent_callback_t)(const char *intent_name, const char *intent_data, const char *conversation_id);
+typedef void (*ha_intent_callback_t)(const char *intent_name,
+                                     const char *intent_data,
+                                     const char *conversation_id);
 
 /**
  * @brief Callback for STT text output
@@ -146,14 +165,16 @@ typedef void (*ha_intent_callback_t)(const char *intent_name, const char *intent
  * @param text Recognized text from STT
  * @param conversation_id Associated conversation ID
  */
-typedef void (*ha_stt_callback_t)(const char *text, const char *conversation_id);
+typedef void (*ha_stt_callback_t)(const char *text,
+                                  const char *conversation_id);
 
 /**
  * @brief Register callback for conversation responses
  *
  * @param callback Function to call when HA sends conversation response
  */
-void ha_client_register_conversation_callback(ha_conversation_callback_t callback);
+void ha_client_register_conversation_callback(
+    ha_conversation_callback_t callback);
 
 /**
  * @brief Register callback for TTS audio data

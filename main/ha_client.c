@@ -760,6 +760,43 @@ static void ha_reconnect_task(void *arg) {
   vTaskDelete(NULL);
 }
 
+esp_err_t ha_client_ensure_connected(uint32_t timeout_ms) {
+  // Already connected and authenticated - return immediately
+  if (ha_client_is_connected()) {
+    return ESP_OK;
+  }
+
+  ESP_LOGI(TAG, "Ensuring HA connection (timeout=%ums)...",
+           (unsigned)timeout_ms);
+
+  // Trigger reconnect if websocket client exists but is disconnected
+  if (ws_client && !ws_connected) {
+    // Stop and restart the client to force reconnection
+    esp_websocket_client_close(ws_client, pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_websocket_client_start(ws_client);
+  } else if (!ws_client) {
+    // No client exists - need full reinit (shouldn't normally happen)
+    ESP_LOGW(TAG, "WebSocket client not initialized");
+    return ESP_FAIL;
+  }
+
+  // Wait for authentication with timeout
+  if (ha_event_group) {
+    EventBits_t bits =
+        xEventGroupWaitBits(ha_event_group, HA_AUTHENTICATED_BIT, pdFALSE,
+                            pdFALSE, pdMS_TO_TICKS(timeout_ms));
+    if (bits & HA_AUTHENTICATED_BIT) {
+      ESP_LOGI(TAG, "HA connection ensured");
+      return ESP_OK;
+    }
+  }
+
+  ESP_LOGW(TAG, "Failed to ensure HA connection within %ums",
+           (unsigned)timeout_ms);
+  return ESP_ERR_TIMEOUT;
+}
+
 esp_err_t ha_client_request_reconnect(const char *reason) {
   if (reconnect_task_handle != NULL)
     return ESP_OK;

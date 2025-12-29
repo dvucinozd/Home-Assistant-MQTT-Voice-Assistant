@@ -600,8 +600,21 @@ static esp_err_t start_audio_streaming(uint32_t max_recording_ms,
 
   audio_capture_enable_vad(NULL, vad_event_handler);
 
+  // Ensure HA connection is ready before starting conversation
+  // This handles the case where WebSocket disconnected during inactivity
+  if (ha_client_ensure_connected(3000) != ESP_OK) {
+    ESP_LOGW(TAG, "HA connection not available after timeout");
+    // Continue anyway - VAD will still work, just no streaming
+  }
+
   if (ha_client_is_connected()) {
     current_pipeline_handler = ha_client_start_conversation();
+    if (current_pipeline_handler == NULL) {
+      // Retry once after short delay - connection may have just reconnected
+      ESP_LOGW(TAG, "First start_conversation attempt failed, retrying...");
+      vTaskDelay(pdMS_TO_TICKS(200));
+      current_pipeline_handler = ha_client_start_conversation();
+    }
     if (current_pipeline_handler == NULL) {
       ESP_LOGW(TAG,
                "ha_client_start_conversation() returned NULL - HA may be busy");
