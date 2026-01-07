@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires ESP-IDF v5.5
 - JC-ESP32P4-M3-DEV board specifically tested (may work on variants)
 - OLED display is optional (not required for core functionality)
+- **I2S cosmetic error** (non-critical): On startup, `i2s_channel_disable(): the channel has not been enabled yet` appears in logs. This is caused by `esp_codec_dev` library (`managed_components/espressif__esp_codec_dev/platform/audio_codec_data_i2s.c:436-440`) attempting to disable I2S channels before they are enabled during format configuration. No functional impact.
 
 ---
 
