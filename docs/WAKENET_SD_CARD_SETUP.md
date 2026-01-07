@@ -1,6 +1,6 @@
 # WakeNet9 Model Setup (Flash by default, SD optional)
 
-This project uses **ESP-SR WakeNet9** for wake word detection (default model: `wn9_hiesp` = "Hi ESP").
+This project uses **ESP-SR WakeNet9** for wake word detection (default model: `wn9_heykira_tts3` = "Hey Kira").
 
 ## Default (recommended): Flash `model` partition
 
@@ -25,7 +25,7 @@ Each WakeNet9 model is a folder with 3 files:
 
 ```
 /sdcard/srmodels/
-  wn9_hiesp/
+  wn9_heykira_tts3/
     _MODEL_INFO_
     wn9_data
     wn9_index
@@ -36,12 +36,12 @@ Each WakeNet9 model is a folder with 3 files:
 Models are located in the repo under:
 `managed_components/espressif__esp-sr/model/wakenet_model/`
 
-Example (copy "Hi ESP"):
+Example (copy "Hey Kira"):
 
 PowerShell (SD card mounted as `E:`):
 ```powershell
-New-Item -Path "E:\\srmodels\\wn9_hiesp" -ItemType Directory -Force
-Copy-Item -Path "managed_components\\espressif__esp-sr\\model\\wakenet_model\\wn9_hiesp\\*" -Destination "E:\\srmodels\\wn9_hiesp\\"
+New-Item -Path "E:\\srmodels\\wn9_heykira_tts3" -ItemType Directory -Force
+Copy-Item -Path "managed_components\\espressif__esp-sr\\model\\target\\wn9_heykira_tts3\\*" -Destination "E:\\srmodels\\wn9_heykira_tts3\\"
 ```
 
 ## Enabling SD model mode in firmware

@@ -10,7 +10,7 @@ Local voice assistant firmware for Home Assistant, built natively on ESP-IDF for
 
 ## ✨ Highlights
 
-- Wake word: ESP-SR WakeNet9 model `wn9_hiesp` ("Hi ESP"), 16 kHz mono; threshold (`wwd_detection_threshold`) adjustable at runtime (0.50-0.95).
+- Wake word: ESP-SR WakeNet9 model `wn9_heykira_tts3` ("Hey Kira"), 16 kHz mono; threshold (`wwd_detection_threshold`) adjustable at runtime (0.50-0.95).
 - Home Assistant Assist pipeline via WebSocket: STT/intent/TTS events + audio streaming.
 - Local timer fallback: if HA does not support timers (or intent parsing fails), the firmware tries to extract duration from STT text (Croatian keywords like "timer/tajmer/odbrojavanje").
 - Local MP3 player from SD card; voice pipeline pauses/stops WWD during music to avoid codec/I2S conflicts.

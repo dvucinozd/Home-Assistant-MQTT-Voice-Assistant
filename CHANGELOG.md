@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Initial release of JC-ESP32P4-M3-DEV Voice Assistant firmware
-- WakeNet9 wake-word detection (`wn9_hiesp` model, "Hi ESP")
+- WakeNet9 wake-word detection (`wn9_heykira_tts3` model, "Hey Kira")
 - Home Assistant Assist pipeline integration via WebSocket
 - Voice Activity Detection (VAD) with adjustable thresholds
 - Local timer fallback with Croatian keywords support ("timer/tajmer/odbrojavanje")
