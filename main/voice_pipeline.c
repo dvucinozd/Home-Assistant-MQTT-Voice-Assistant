@@ -24,6 +24,7 @@
 #include "oled_status.h"
 #include "ota_update.h"
 #include "sys_diag.h"
+#include "timer_manager.h"
 #include "tts_player.h"
 
 #define TAG "voice_pipeline"
@@ -79,12 +80,11 @@ static bool followup_vad_pending = false;
 static bool music_paused_for_tts = false;
 static bool suppress_tts_audio = false;
 static bool timer_local_handled = false;
-static TimerHandle_t local_timer_handle = NULL;
-static uint32_t local_timer_seconds = 0;
 static uint32_t pending_timer_seconds = 0;
 static bool pending_timer_valid = false;
 static char last_stt_text[128];
 static bool timer_started_from_stt = false;
+static uint8_t last_timer_id = 0;
 
 #define HA_RESPONSE_TIMEOUT_MS 45000
 static TimerHandle_t ha_response_timeout_timer = NULL;
@@ -124,7 +124,7 @@ static bool response_requests_music_selection(const char *response_text);
 static bool ascii_substr_case_insensitive(const char *haystack,
                                           const char *needle);
 static int ascii_tolower_int(int c);
-static void local_timer_callback(TimerHandle_t timer);
+static void timer_expired_callback(uint8_t timer_id);
 static void local_timer_start(uint32_t seconds);
 static void local_timer_stop(void);
 static void ha_pipeline_error_handler(const char *error_code,
@@ -202,6 +202,9 @@ esp_err_t voice_pipeline_init(void) {
   tts_player_init();
   ha_client_register_tts_audio_callback(tts_audio_handler);
   tts_player_register_complete_callback(on_tts_complete);
+
+  // Initialize Timer Manager
+  timer_manager_init(timer_expired_callback);
 
   // Allocate pipeline_task stack from PSRAM to save internal RAM
   if (!pipeline_task_stack) {
@@ -700,9 +703,8 @@ static void conversation_response_handler(const char *response_text,
     ha_response_timeout_stop();
     oled_status_set_response_preview("TIMER");
     if (mqtt_ha_is_connected()) {
-      mqtt_ha_update_sensor("va_response", local_timer_seconds > 0
-                                               ? "TIMER POSTAVLJEN"
-                                               : "TIMER");
+      mqtt_ha_update_sensor("va_response",
+                            last_timer_id > 0 ? "TIMER POSTAVLJEN" : "TIMER");
       mqtt_ha_update_sensor("va_status", "SPREMAN");
     }
     pipeline_post_cmd(PIPELINE_CMD_RESUME_WWD, 0);
@@ -915,10 +917,10 @@ static void handle_local_music_play(void) {
   }
 }
 
-static void local_timer_callback(TimerHandle_t timer) {
-  (void)timer;
-  local_timer_seconds = 0;
-  pipeline_post_cmd(PIPELINE_CMD_TIMER_BEEP, 0);
+// Timer manager callback when a timer expires
+static void timer_expired_callback(uint8_t timer_id) {
+  ESP_LOGI(TAG, "Timer #%d expired! Playing alarm sound.", timer_id);
+  pipeline_post_cmd(PIPELINE_CMD_TIMER_BEEP, (int)timer_id);
 }
 
 static void local_timer_start(uint32_t seconds) {
@@ -926,36 +928,47 @@ static void local_timer_start(uint32_t seconds) {
     return;
   }
 
-  local_timer_seconds = seconds;
+  uint8_t timer_id = 0;
+  esp_err_t err = timer_manager_start(seconds, NULL, &timer_id);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to start timer: %s", esp_err_to_name(err));
+    return;
+  }
+  last_timer_id = timer_id;
+  ESP_LOGI(TAG, "Timer #%d started: %lu seconds", timer_id,
+           (unsigned long)seconds);
 
-  if (local_timer_handle == NULL) {
-    local_timer_handle = xTimerCreate("va_timer", pdMS_TO_TICKS(1000), pdFALSE,
-                                      NULL, local_timer_callback);
-    if (local_timer_handle == NULL) {
-      ESP_LOGE(TAG, "Failed to create local timer");
-      return;
-    }
+  // TTS voice confirmation
+  char tts_msg[64];
+  uint32_t hours = seconds / 3600;
+  uint32_t mins = (seconds % 3600) / 60;
+  uint32_t secs = seconds % 60;
+
+  if (hours > 0 && mins > 0) {
+    snprintf(tts_msg, sizeof(tts_msg),
+             "Timer postavljen na %u sata i %u minuta.", (unsigned)hours,
+             (unsigned)mins);
+  } else if (hours > 0) {
+    snprintf(tts_msg, sizeof(tts_msg), "Timer postavljen na %u sata.",
+             (unsigned)hours);
+  } else if (mins > 0 && secs > 0) {
+    snprintf(tts_msg, sizeof(tts_msg),
+             "Timer postavljen na %u minuta i %u sekundi.", (unsigned)mins,
+             (unsigned)secs);
+  } else if (mins > 0) {
+    snprintf(tts_msg, sizeof(tts_msg), "Timer postavljen na %u minuta.",
+             (unsigned)mins);
+  } else {
+    snprintf(tts_msg, sizeof(tts_msg), "Timer postavljen na %u sekundi.",
+             (unsigned)secs);
   }
 
-  uint64_t duration_ms = (uint64_t)seconds * 1000ULL;
-  if (duration_ms > UINT32_MAX) {
-    duration_ms = UINT32_MAX;
-  }
-
-  xTimerStop(local_timer_handle, 0);
-  xTimerChangePeriod(local_timer_handle, pdMS_TO_TICKS((uint32_t)duration_ms),
-                     0);
-  xTimerStart(local_timer_handle, 0);
-  ESP_LOGI(TAG, "Local timer set: %u seconds", seconds);
+  ha_client_request_tts(tts_msg);
 }
 
 static void local_timer_stop(void) {
-  if (local_timer_handle == NULL) {
-    return;
-  }
-  xTimerStop(local_timer_handle, 0);
-  local_timer_seconds = 0;
-  ESP_LOGI(TAG, "Local timer stopped");
+  timer_manager_stop_all();
+  ESP_LOGI(TAG, "All timers stopped");
 }
 
 static bool parse_timer_seconds_from_intent(const char *intent_data,
@@ -1268,6 +1281,7 @@ static int parse_cro_number_word(const char *word) {
   if (!word)
     return -1;
 
+  // Basic numbers 0-12
   if (strcmp(word, "nula") == 0)
     return 0;
   if (strcmp(word, "jedan") == 0 || strcmp(word, "jedna") == 0 ||
@@ -1277,11 +1291,11 @@ static int parse_cro_number_word(const char *word) {
     return 2;
   if (strcmp(word, "tri") == 0)
     return 3;
-  if (strcmp(word, "cetiri") == 0)
+  if (strcmp(word, "cetiri") == 0 || strcmp(word, "chetiri") == 0)
     return 4;
   if (strcmp(word, "pet") == 0)
     return 5;
-  if (strcmp(word, "sest") == 0)
+  if (strcmp(word, "sest") == 0 || strcmp(word, "shest") == 0)
     return 6;
   if (strcmp(word, "sedam") == 0)
     return 7;
@@ -1296,6 +1310,40 @@ static int parse_cro_number_word(const char *word) {
   if (strcmp(word, "dvanaest") == 0)
     return 12;
 
+  // Teens 13-19
+  if (strcmp(word, "trinaest") == 0)
+    return 13;
+  if (strcmp(word, "cetrnaest") == 0 || strcmp(word, "chetrnaest") == 0)
+    return 14;
+  if (strcmp(word, "petnaest") == 0)
+    return 15;
+  if (strcmp(word, "sesnaest") == 0 || strcmp(word, "shesnaest") == 0)
+    return 16;
+  if (strcmp(word, "sedamnaest") == 0)
+    return 17;
+  if (strcmp(word, "osamnaest") == 0)
+    return 18;
+  if (strcmp(word, "devetnaest") == 0)
+    return 19;
+
+  // Tens 20-90
+  if (strcmp(word, "dvadeset") == 0)
+    return 20;
+  if (strcmp(word, "trideset") == 0)
+    return 30;
+  if (strcmp(word, "cetrdeset") == 0 || strcmp(word, "chetrdeset") == 0)
+    return 40;
+  if (strcmp(word, "pedeset") == 0)
+    return 50;
+  if (strcmp(word, "sezdeset") == 0 || strcmp(word, "shezdeset") == 0)
+    return 60;
+  if (strcmp(word, "sedamdeset") == 0)
+    return 70;
+  if (strcmp(word, "osamdeset") == 0)
+    return 80;
+  if (strcmp(word, "devedeset") == 0)
+    return 90;
+
   return -1;
 }
 
@@ -1305,6 +1353,11 @@ static bool is_timer_keyword(const char *word) {
   if (strcmp(word, "timer") == 0 || strcmp(word, "tajmer") == 0)
     return true;
   if (strcmp(word, "odbrojavanje") == 0 || strcmp(word, "odbroj") == 0)
+    return true;
+  // New keywords
+  if (strcmp(word, "alarm") == 0 || strcmp(word, "alarma") == 0)
+    return true;
+  if (strcmp(word, "podsjetnik") == 0 || strcmp(word, "podsjetnika") == 0)
     return true;
   return false;
 }

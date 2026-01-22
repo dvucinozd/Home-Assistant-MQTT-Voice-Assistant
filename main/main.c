@@ -630,6 +630,11 @@ static void mqtt_setup_task(void *arg) {
   mqtt_ha_register_sensor("ota_progress", "OTA Progress", "%", NULL);
   mqtt_ha_register_sensor("ota_update_url", "OTA Update URL", NULL, NULL);
 
+  // Timer sensors
+  mqtt_ha_register_sensor("timer_active", "Timer Active", NULL, NULL);
+  mqtt_ha_register_sensor("timer_remaining", "Timer Remaining", NULL, NULL);
+  mqtt_ha_register_sensor("timer_count", "Timer Count", NULL, NULL);
+
   mqtt_ha_register_number("led_brightness", "LED Brightness", 0, 100, 1, "%",
                           mqtt_led_brightness_callback);
   mqtt_ha_register_number("output_volume", "Output Volume", 0, 100, 1, "%",
