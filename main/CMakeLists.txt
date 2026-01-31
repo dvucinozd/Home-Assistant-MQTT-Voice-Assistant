@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c"
+idf_component_register(SRCS "wake_prompt.c" "main.c"
                             "wifi_manager.c"
                             "network_manager.c"
                             "local_music_player.c"

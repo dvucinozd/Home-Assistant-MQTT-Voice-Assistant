@@ -26,6 +26,7 @@
 #include "sys_diag.h"
 #include "timer_manager.h"
 #include "tts_player.h"
+#include "wake_prompt.h"
 
 #define TAG "voice_pipeline"
 #define FOLLOWUP_RECORDING_MS 7000
@@ -206,6 +207,9 @@ esp_err_t voice_pipeline_init(void) {
   // Initialize Timer Manager
   timer_manager_init(timer_expired_callback);
 
+  // Initialize Wake Prompt Player (loads audio from SD card)
+  wake_prompt_init(); // Non-fatal if file not found - will use beep fallback
+
   // Allocate pipeline_task stack from PSRAM to save internal RAM
   if (!pipeline_task_stack) {
     pipeline_task_stack = (StackType_t *)heap_caps_malloc(
@@ -313,7 +317,12 @@ static void pipeline_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(50));
 
         ESP_LOGI(TAG, "Playing wake confirmation");
-        beep_tone_play(BEEP_WAKE_FREQ, BEEP_WAKE_DURATION, BEEP_WAKE_VOLUME);
+        // Play voice prompt if available, otherwise fall back to beep
+        if (wake_prompt_is_available()) {
+          wake_prompt_play();
+        } else {
+          beep_tone_play(BEEP_WAKE_FREQ, BEEP_WAKE_DURATION, BEEP_WAKE_VOLUME);
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
 
         start_audio_streaming(current_config.vad_max_recording_ms, "wake_word");
