@@ -59,11 +59,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Future Roadmap
 
-- [ ] Multi-language support (wake words, timers)
-- [ ] Additional board support (generic ESP32-P4 setups)
-- [ ] Bluetooth speaker pairing
+- [x] Timer Manager with Croatian keywords
+- [x] Wake Prompt voice confirmation
+- [ ] **Camera Integration** (OV5647 + Face Detection) - *In Progress*
+- [ ] RTSP streaming for Frigate
+- [ ] Multi-language support (wake words)
 - [ ] Local LLM integration
-- [ ] Enhanced diagnostics dashboard
+- [ ] Bluetooth speaker pairing
+
+---
+
+## [0.2.5] - 2025-12-25
+
+### Fixed
+- **Internal RAM Fix**: Moved `pipeline_task` stack to PSRAM (12KB was exhausting internal RAM).
+
+---
+
+## [0.2.4] - 2025-12-25
+
+### Fixed
+- **Music/TTS Conflict**: TTS suppression when music command detected.
+
+---
+
+## [0.2.3] - 2025-12-25
+
+### Fixed
+- **Stability**: Increased `pipeline_task` stack to 12KB, added `audio_capture_stop_wait`.
+
+---
+
+## [0.2.2] - 2025-12-25
+
+### Fixed
+- **Stack Overflow**: Increased stack from 4KB to 8KB, added watchdog feeding.
+
+---
+
+## [0.2.1] - 2025-12-25
+
+### Fixed
+- **Voice-Triggered Music**: Fixed hang on "Play Music" command via `PIPELINE_CMD_MUSIC_CONTROL`.
+
+---
+
+## [0.2.0] - 2025-12-25
+
+### Added
+- **Timer Manager**: Multi-timer with Croatian keywords (timer/tajmer/alarm/podsjetnik).
+- **Wake Prompt**: Audio confirmation on wake word (Google TTS).
+- **MQTT Timer Sensors**: `timer_1/2/3_remaining`, `timers_active`.
+
+### Fixed
+- Music race condition, queue timeout increased to 100ms.
 
 ---
 

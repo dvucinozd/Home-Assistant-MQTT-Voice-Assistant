@@ -11,11 +11,12 @@ Local voice assistant firmware for Home Assistant, built natively on ESP-IDF for
 ## ✨ Highlights
 
 - Wake word: ESP-SR WakeNet9 model `wn9_heykira_tts3` ("Hey Kira"), 16 kHz mono; threshold (`wwd_detection_threshold`) adjustable at runtime (0.50-0.95).
+- **Wake Prompt**: Voice confirmation audio ("Izvolite, kako mogu pomoći?") when wake word detected.
 - Home Assistant Assist pipeline via WebSocket: STT/intent/TTS events + audio streaming.
-- Local timer fallback: if HA does not support timers (or intent parsing fails), the firmware tries to extract duration from STT text (Croatian keywords like "timer/tajmer/odbrojavanje").
+- **Timer Manager**: Multi-timer support with Croatian keywords (timer/tajmer/odbrojavanje/alarm/podsjetnik).
 - Local MP3 player from SD card; voice pipeline pauses/stops WWD during music to avoid codec/I2S conflicts.
 - Ethernet priority with Wi-Fi fallback; SD card is unmounted when switching to Wi-Fi to free SDIO.
-- MQTT Home Assistant Discovery: sensors + controls (WWD, AGC, LED, volume, VAD tuning, OTA).
+- MQTT Home Assistant Discovery: sensors + controls (WWD, AGC, LED, volume, VAD tuning, OTA, timers).
 - OTA updates: URL input + "Start OTA" via HA/MQTT and OTA via the web dashboard; validates HTTP status and works even without `Content-Length`.
 - Web dashboard + WebSerial (real-time logs) at `http://<device-ip>/` and `http://<device-ip>/webserial`.
 - Safe Mode (boot-loop protection) + watchdog + reset diagnostics.
@@ -152,6 +153,7 @@ Runtime state/control prefix: `esp32p4`
 - `music_state`, `current_track`, `total_tracks`
 - `sd_card_status`
 - `ota_status`, `ota_progress`, `ota_update_url`
+- `timer_1_remaining`, `timer_2_remaining`, `timer_3_remaining`, `timers_active`
 
 ### Switches
 
@@ -222,7 +224,7 @@ LED statuses are implemented in `main/led_status.c` and tied to VA/OTA events.
 | `IDLE` | 🟢 | solid | - |
 | `LISTENING` | 🔵 | pulsing | 1000ms |
 | `PROCESSING` | 🟡 | blinking | 500ms |
-| `SPEAKING` | 🔵 | fast pulsing | 300ms |
+| `SPEAKING` | 🔵 Cyan | fast pulsing | 300ms |
 | `OTA` | ⚪ | fast pulsing | 300ms |
 | `ERROR` | 🔴 | fast blinking | 200ms |
 | `CONNECTING` | 🟣 | breathing | 2000ms |

@@ -90,3 +90,10 @@ Other dependencies (see `main/CMakeLists.txt` `REQUIRES` / `PRIV_REQUIRES`):
 
 - HTTP server: status/dashboard + WebSerial log stream
 - `help_scripts/`: scripts to read HA state and logs over WS API (use local `main/config.h`; secrets are not committed)
+
+## Additional modules (v0.2.x)
+
+- `timer_manager.c/h` - Multi-timer with Croatian keyword parsing
+- `alarm_manager.c/h` - Beep notifications for timer expiration
+- `wake_prompt.c/h` - Voice confirmation audio on wake word detection
+
