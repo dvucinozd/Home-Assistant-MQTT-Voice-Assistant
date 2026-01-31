@@ -140,3 +140,39 @@ Known quirks
 - Windows ACL: previously `.git` had DENY on write; ensure permissions allow creating `.git/index.lock` before git add/commit.
 - COM port locking: if `Access is denied` persists, replug board or reboot to release COMxx.
 - `text` field in `tts-end` event is NULL in some HA versions; speech text must be extracted from `intent-end` instead.
+
+Camera Integration (WIP)
+------------------------
+**Branch**: `feature/camera-integration`
+
+### Hardware
+- **Camera**: OV5647 (5MP, MIPI-CSI)
+- **Connector**: J3 on JC-ESP32P4-M3-DEV
+- **I2C pins**: SCL=8, SDA=7
+
+### Demo Reference
+```
+C:\Users\Daniel\Desktop\JC-ESP32P4-M3-DEV0\1-Demo\IDF-DEMO\NoDisplay\uvc_camera_ov5647
+```
+
+### Required Components
+```yaml
+dependencies:
+  esp_video: "0.8.*"
+  espressif/esp-dl: "*"  # For face detection
+```
+
+### Kconfig Options
+```
+CONFIG_CAMERA_OV5647=y
+CONFIG_CAMERA_OV5647_MIPI_RAW10_1920x1080_30FPS=y
+CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SCL_PIN=8
+CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SDA_PIN=7
+```
+
+### Planned Features
+- Continuous face detection (ESP-WHO/ESP-DL)
+- RTSP stream for Frigate integration
+- Voice commands: "Tko je tu?", "Ima li netko?"
+- MQTT sensors: `camera_persons`, `camera_detection_active`
+
