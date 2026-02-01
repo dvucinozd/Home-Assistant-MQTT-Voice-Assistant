@@ -20,3 +20,7 @@ dependencies:
   espressif/mdns: "^1.0.0"
   espressif/esp-sr: "^2.0.0"  # ESP Speech Recognition for wake word detection
   espressif/led_strip: "^2.5.0"
+  # Camera components (OV5647 via MIPI-CSI)
+  esp_video: "0.8.*"
+  esp_cam_sensor: "*"
+

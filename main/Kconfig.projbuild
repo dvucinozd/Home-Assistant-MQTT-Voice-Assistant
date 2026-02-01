@@ -1,0 +1,21 @@
+menu "Camera Configuration"
+
+    config CAMERA_I2C_SCL_PIN
+        int "Camera I2C SCL Pin"
+        default 8
+        help
+            GPIO pin for camera I2C SCL (SCCB clock).
+
+    config CAMERA_I2C_SDA_PIN
+        int "Camera I2C SDA Pin"
+        default 7
+        help
+            GPIO pin for camera I2C SDA (SCCB data).
+
+    config CAMERA_ENABLE
+        bool "Enable Camera"
+        default y
+        help
+            Enable OV5647 camera via MIPI-CSI.
+
+endmenu

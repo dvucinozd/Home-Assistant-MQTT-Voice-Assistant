@@ -21,6 +21,7 @@
 // Modules
 #include "alarm_manager.h"
 #include "audio_capture.h"
+#include "camera_manager.h"
 #include "config.h"
 #include "ha_client.h"
 #include "led_status.h"
@@ -884,6 +885,15 @@ void app_main(void) {
     ESP_ERROR_CHECK(voice_pipeline_init());
 
     alarm_manager_init();
+
+    // Camera Init (optional - non-fatal if fails)
+    ESP_LOGI(TAG, "Initializing Camera...");
+    if (camera_manager_init() == ESP_OK) {
+      ESP_LOGI(TAG, "Camera initialized: %s", camera_manager_get_status());
+    } else {
+      ESP_LOGW(TAG, "Camera initialization failed (may not be connected)");
+    }
+
     local_music_player_register_callback(music_state_callback);
 
     ESP_LOGI(TAG, "System Ready. Waiting for Wake Word...");
