@@ -29,9 +29,11 @@ def main():
 
     # Build command (run in cmd.exe with IDF export)
     # Force UTF-8 output to avoid UnicodeEncodeError on Windows consoles.
+    args = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "build"
+    
     build_cmd = (
         f'cmd.exe /c "chcp 65001>nul && set PYTHONIOENCODING=utf-8 && '
-        f'call \"{idf_export}\" && idf.py build"'
+        f'call \"{idf_export}\" && idf.py {args}"'
     )
 
     print("\nStarting build process...")

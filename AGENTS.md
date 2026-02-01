@@ -141,38 +141,96 @@ Known quirks
 - COM port locking: if `Access is denied` persists, replug board or reboot to release COMxx.
 - `text` field in `tts-end` event is NULL in some HA versions; speech text must be extracted from `intent-end` instead.
 
-Camera Integration (WIP)
-------------------------
-**Branch**: `feature/camera-integration`
+Camera Integration (Completed - Feb 1, 2026)
+-------------------------------------------
+**Status**: ✅ Fully operational with Frigate NVR integration
 
 ### Hardware
 - **Camera**: OV5647 (5MP, MIPI-CSI)
 - **Connector**: J3 on JC-ESP32P4-M3-DEV
 - **I2C pins**: SCL=8, SDA=7
+- **Format**: JPEG via Hardware encoder (ESP32-P4 JPEG peripheral)
+- **Resolution**: 1280x960 @ 5 FPS
+- **Stream**: HTTP MJPEG endpoint at `/mjpeg`
 
-### Demo Reference
-```
-C:\Users\Daniel\Desktop\JC-ESP32P4-M3-DEV0\1-Demo\IDF-DEMO\NoDisplay\uvc_camera_ov5647
-```
+### Implementation Details
 
-### Required Components
+#### Camera Manager (`main/camera_manager.c`)
+- Pixel format: **YUV422P** (HW JPEG encoder requirement)
+- Switched from YUV420 due to hardware JPEG driver limitations
+- Auto Exposure (AEC) and Auto Gain (AGC) explicitly enabled in sensor driver
+
+#### Sensor Configuration (`managed_components/espressif__esp_cam_sensor/sensors/ov5647/ov5647.c`)
+- Force-enabled AEC/AGC by writing `0x00` to register `0x3503`
+- Fixed black image issue caused by default manual mode
+
+#### MJPEG Stream (`main/webserial.c`)
+- Endpoint: `http://<ESP32_IP>/mjpeg`
+- Frame rate: 5 FPS (200ms delay)
+- Optimized for bandwidth and stability
+
+#### VFS Configuration (`sdkconfig.defaults`)
+- `CONFIG_VFS_MAX_COUNT=20` (maximum allowed by Kconfig)
+- Required for video device registration
+
+### Frigate NVR Integration
+
+#### go2rtc Configuration
 ```yaml
-dependencies:
-  esp_video: "0.8.*"
-  espressif/esp-dl: "*"  # For face detection
+go2rtc:
+  streams:
+    esp32_p4:
+      - ffmpeg:http://192.168.0.222/mjpeg#video=mjpeg#timeout=60
+```
+**Note**: `#timeout=60` parameter is critical for stream stability
+
+#### Frigate Camera Config
+```yaml
+cameras:
+  esp32_p4:
+    enabled: true
+    ffmpeg:
+      hwaccel_args: []
+      inputs:
+        - path: rtsp://127.0.0.1:8554/esp32_p4
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+    detect:
+      width: 1280
+      height: 960
+      fps: 5
+    objects:
+      track:
+        - person
+        - cat
+    snapshots:
+      enabled: true
 ```
 
-### Kconfig Options
-```
-CONFIG_CAMERA_OV5647=y
-CONFIG_CAMERA_OV5647_MIPI_RAW10_1920x1080_30FPS=y
-CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SCL_PIN=8
-CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SDA_PIN=7
-```
+### Known Issues & Workarounds
 
-### Planned Features
-- Continuous face detection (ESP-WHO/ESP-DL)
-- RTSP stream for Frigate integration
-- Voice commands: "Tko je tu?", "Ima li netko?"
-- MQTT sensors: `camera_persons`, `camera_detection_active`
+#### Safe Mode Boot Counter
+- **Issue**: Persistent boot counter in NVS causes Safe Mode activation on every boot
+- **Symptom**: Camera not initialized, returns `500 Internal Server Error`
+- **Fix**: Modified `main/sys_diag.c` to force `safe_mode_active = false` (line 141)
+- **Status**: Temporary workaround - proper NVS reset logic needs investigation
+
+#### Dashboard Performance
+- **Symptom**: Web dashboard becomes sluggish when camera is streaming
+- **Cause**: MJPEG stream uses significant ESP32-P4 resources
+- **Recommendation**: Access dashboard only when needed or reduce camera resolution
+
+### Files Modified
+- `main/camera_manager.c` – YUV422P pixel format, JPEG encoder config
+- `managed_components/espressif__esp_cam_sensor/sensors/ov5647/ov5647.c` – AEC/AGC enable
+- `main/webserial.c` – 5 FPS MJPEG stream
+- `main/sys_diag.c` – Safe Mode bypass (line 141)
+- `sdkconfig.defaults` – VFS_MAX_COUNT=20
+
+### Testing
+✅ Direct MJPEG stream accessible via browser  
+✅ go2rtc restream functional with timeout parameter  
+✅ Frigate object detection operational  
+✅ MQTT snapshots publishing to Home Assistant  
 

@@ -6,7 +6,7 @@
 #include "camera_manager.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
+#include "freertos/FreeRTOS.h" // IWYU pragma: keep
 #include "freertos/semphr.h"
 
 #include <fcntl.h>
@@ -14,6 +14,8 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
+#include "driver/i2c_master.h"
+#include "driver/jpeg_encode.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
 #include "linux/videodev2.h"
@@ -29,15 +31,21 @@ static SemaphoreHandle_t s_mutex = NULL;
 // Buffer configuration
 #define CAM_BUFFER_COUNT 2
 static uint8_t *s_cam_buffer[CAM_BUFFER_COUNT] = {NULL};
+
 static uint8_t *s_jpeg_buffer = NULL;
 static size_t s_jpeg_buffer_size = 0;
 
-// Default configuration
+// Software JPEG encoder (used when HW JPEG not available)
+static jpeg_encoder_handle_t s_sw_jpeg_handle = NULL;
+static jpeg_encode_cfg_t s_sw_jpeg_config = {0};
+
+// Default configuration - matches sdkconfig OV5647 resolution
+// Default configuration - matches sdkconfig OV5647 resolution (RAW10)
 static camera_config_t s_config = {.i2c_scl_pin = 8,
                                    .i2c_sda_pin = 7,
                                    .width = 1280,
-                                   .height = 720,
-                                   .fps = 30};
+                                   .height = 960,
+                                   .fps = 45};
 
 // Forward declarations
 static esp_err_t init_camera_device(void);
@@ -68,18 +76,26 @@ esp_err_t camera_manager_init_with_config(const camera_config_t *config) {
     return ESP_ERR_NO_MEM;
   }
 
+  // Get existing I2C bus handle from BSP (port 1)
+  // The BSP already initializes I2C, we must NOT create a new bus!
+  i2c_master_bus_handle_t i2c_handle = NULL;
+  esp_err_t ret = i2c_master_get_bus_handle(1, &i2c_handle);
+  if (ret != ESP_OK || i2c_handle == NULL) {
+    ESP_LOGE(TAG, "Failed to get I2C bus handle from port 1: %s",
+             esp_err_to_name(ret));
+    cleanup_resources();
+    return ESP_FAIL;
+  }
+  ESP_LOGI(TAG, "Using existing I2C bus from port 1");
+
   // Initialize esp_video subsystem
-  // NOTE: Use I2C port 1 to avoid conflict with audio codec on port 0
+  // CRITICAL: Set init_sccb = false to reuse existing I2C bus instead of
+  // creating new one
   esp_video_init_csi_config_t csi_config = {
       .sccb_config =
           {
-              .init_sccb = true,
-              .i2c_config =
-                  {
-                      .port = 1, // Port 1 - audio codec uses port 0
-                      .scl_pin = s_config.i2c_scl_pin,
-                      .sda_pin = s_config.i2c_sda_pin,
-                  },
+              .init_sccb = false, // Do NOT init new I2C - use existing handle!
+              .i2c_handle = i2c_handle, // Existing BSP I2C handle
               .freq = 100000,
           },
       .reset_pin = -1,
@@ -90,7 +106,7 @@ esp_err_t camera_manager_init_with_config(const camera_config_t *config) {
       .csi = &csi_config,
   };
 
-  esp_err_t ret = esp_video_init(&cam_config);
+  ret = esp_video_init(&cam_config);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to init esp_video: %s", esp_err_to_name(ret));
     cleanup_resources();
@@ -104,11 +120,49 @@ esp_err_t camera_manager_init_with_config(const camera_config_t *config) {
     return ret;
   }
 
-  // Initialize JPEG encoder
+  // Initialize JPEG encoder (optional - software JPEG used as fallback)
   ret = init_jpeg_encoder();
   if (ret != ESP_OK) {
-    cleanup_resources();
-    return ret;
+    ESP_LOGW(TAG, "HW JPEG encoder not available, initializing SW encoder...");
+
+    // Initialize software JPEG encoder
+    jpeg_encode_engine_cfg_t encode_eng_cfg = {
+        .timeout_ms = 5000,
+    };
+    ret = jpeg_new_encoder_engine(&encode_eng_cfg, &s_sw_jpeg_handle);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to create SW JPEG encoder: %s",
+               esp_err_to_name(ret));
+      cleanup_resources();
+      return ret;
+    }
+
+    // Configure SW JPEG encoder to YUV420 (if supported, otherwise YUV422
+    // fallback)
+    s_sw_jpeg_config.src_type = JPEG_ENCODE_IN_FORMAT_YUV422;
+    s_sw_jpeg_config.sub_sample = JPEG_DOWN_SAMPLING_YUV422;
+    s_sw_jpeg_config.image_quality = 80; // Good quality
+    s_sw_jpeg_config.width = s_config.width;
+    s_sw_jpeg_config.height = s_config.height;
+
+    // Allocate JPEG output buffer
+    size_t input_size =
+        s_config.width * s_config.height * 3 / 2; // YUV420 = 1.5 bytes/pixel
+    jpeg_encode_memory_alloc_cfg_t mem_cfg = {
+        .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER,
+    };
+    s_jpeg_buffer = (uint8_t *)jpeg_alloc_encoder_mem(input_size / 2, &mem_cfg,
+                                                      &s_jpeg_buffer_size);
+    if (!s_jpeg_buffer) {
+      ESP_LOGE(TAG, "Failed to allocate JPEG buffer");
+      jpeg_del_encoder_engine(s_sw_jpeg_handle);
+      s_sw_jpeg_handle = NULL;
+      cleanup_resources();
+      return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "SW JPEG encoder initialized (buffer: %zu bytes)",
+             s_jpeg_buffer_size);
   }
 
   s_initialized = true;
@@ -141,7 +195,8 @@ static esp_err_t init_camera_device(void) {
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   fmt.fmt.pix.width = s_config.width;
   fmt.fmt.pix.height = s_config.height;
-  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV420;
+  fmt.fmt.pix.pixelformat =
+      V4L2_PIX_FMT_YUV422P; // REQUIRED: HW JPEG supports YUV422P, not YUV420
 
   if (ioctl(s_cam_fd, VIDIOC_S_FMT, &fmt) != 0) {
     ESP_LOGE(TAG, "Failed to set camera format");
@@ -219,7 +274,7 @@ static esp_err_t init_jpeg_encoder(void) {
   fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
   fmt.fmt.pix.width = s_config.width;
   fmt.fmt.pix.height = s_config.height;
-  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV420;
+  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV422P;
 
   if (ioctl(s_jpeg_fd, VIDIOC_S_FMT, &fmt) != 0) {
     ESP_LOGE(TAG, "Failed to set JPEG input format");
@@ -363,40 +418,59 @@ esp_err_t camera_manager_capture_jpeg(camera_frame_t *frame) {
     goto done;
   }
 
-  // Send to JPEG encoder
-  struct v4l2_buffer jpeg_out = {0};
-  jpeg_out.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-  jpeg_out.memory = V4L2_MEMORY_USERPTR;
-  jpeg_out.index = 0;
-  jpeg_out.m.userptr = (unsigned long)s_cam_buffer[cam_buf.index];
-  jpeg_out.length = cam_buf.bytesused;
+  // Check if using HW or SW JPEG encoder
+  if (s_jpeg_fd >= 0) {
+    // Use HW JPEG encoder
+    struct v4l2_buffer jpeg_out = {0};
+    jpeg_out.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    jpeg_out.memory = V4L2_MEMORY_USERPTR;
+    jpeg_out.index = 0;
+    jpeg_out.m.userptr = (unsigned long)s_cam_buffer[cam_buf.index];
+    jpeg_out.length = cam_buf.bytesused;
 
-  if (ioctl(s_jpeg_fd, VIDIOC_QBUF, &jpeg_out) != 0) {
-    ESP_LOGE(TAG, "Failed to queue JPEG input");
+    if (ioctl(s_jpeg_fd, VIDIOC_QBUF, &jpeg_out) != 0) {
+      ESP_LOGE(TAG, "Failed to queue JPEG input");
+      ioctl(s_cam_fd, VIDIOC_QBUF, &cam_buf);
+      goto done;
+    }
+
+    struct v4l2_buffer jpeg_cap = {0};
+    jpeg_cap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    jpeg_cap.memory = V4L2_MEMORY_MMAP;
+
+    if (ioctl(s_jpeg_fd, VIDIOC_DQBUF, &jpeg_cap) != 0) {
+      ESP_LOGE(TAG, "Failed to dequeue JPEG output");
+      ioctl(s_cam_fd, VIDIOC_QBUF, &cam_buf);
+      goto done;
+    }
+
+    ioctl(s_cam_fd, VIDIOC_QBUF, &cam_buf);
+    ioctl(s_jpeg_fd, VIDIOC_DQBUF, &jpeg_out);
+
+    frame->buf = s_jpeg_buffer;
+    frame->len = jpeg_cap.bytesused;
+  } else if (s_sw_jpeg_handle) {
+    // Use SW JPEG encoder
+    uint32_t jpeg_size = 0;
+    ret = jpeg_encoder_process(s_sw_jpeg_handle, &s_sw_jpeg_config,
+                               s_cam_buffer[cam_buf.index], cam_buf.bytesused,
+                               s_jpeg_buffer, s_jpeg_buffer_size, &jpeg_size);
+
+    ioctl(s_cam_fd, VIDIOC_QBUF, &cam_buf);
+
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "SW JPEG encode failed: %s", esp_err_to_name(ret));
+      goto done;
+    }
+
+    frame->buf = s_jpeg_buffer;
+    frame->len = jpeg_size;
+  } else {
+    ESP_LOGE(TAG, "No JPEG encoder available");
     ioctl(s_cam_fd, VIDIOC_QBUF, &cam_buf);
     goto done;
   }
 
-  // Dequeue JPEG output
-  struct v4l2_buffer jpeg_cap = {0};
-  jpeg_cap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  jpeg_cap.memory = V4L2_MEMORY_MMAP;
-
-  if (ioctl(s_jpeg_fd, VIDIOC_DQBUF, &jpeg_cap) != 0) {
-    ESP_LOGE(TAG, "Failed to dequeue JPEG output");
-    ioctl(s_cam_fd, VIDIOC_QBUF, &cam_buf);
-    goto done;
-  }
-
-  // Re-queue camera buffer
-  ioctl(s_cam_fd, VIDIOC_QBUF, &cam_buf);
-
-  // Dequeue JPEG output buffer (to complete the cycle)
-  ioctl(s_jpeg_fd, VIDIOC_DQBUF, &jpeg_out);
-
-  // Fill frame info
-  frame->buf = s_jpeg_buffer;
-  frame->len = jpeg_cap.bytesused;
   frame->width = s_config.width;
   frame->height = s_config.height;
   frame->timestamp = esp_timer_get_time();
@@ -433,8 +507,12 @@ const char *camera_manager_get_status(void) {
   if (!s_initialized) {
     return "NOT_INIT";
   }
-  if (s_cam_fd < 0 || s_jpeg_fd < 0) {
+  if (s_cam_fd < 0) {
     return "ERROR";
+  }
+  // JPEG encoder is optional - software encoding used as fallback
+  if (s_jpeg_fd < 0) {
+    return "OK (SW JPEG)";
   }
   return "OK";
 }

@@ -26,7 +26,7 @@ idf.py --version
 
 echo.
 echo Building project...
-idf.py build
+idf.py clean build
 
 echo.
 echo ========================================

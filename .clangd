@@ -1,0 +1,10 @@
+CompileFlags:
+  Remove:
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -fno-jump-tables
+    - -march=*
+
+  Add:
+    - -march=rv32imafc_zicsr_zifencei
+    - --target=riscv32-unknown-elf

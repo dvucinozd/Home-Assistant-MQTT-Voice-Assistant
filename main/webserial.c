@@ -428,8 +428,8 @@ static esp_err_t mjpeg_stream_handler(httpd_req_t *req) {
 
     camera_manager_return_frame(&frame);
 
-    // ~15 FPS for streaming (adjust as needed)
-    vTaskDelay(pdMS_TO_TICKS(66));
+    // 5 FPS for streaming (matching Frigate detection FPS)
+    vTaskDelay(pdMS_TO_TICKS(200));
   }
 
   ESP_LOGI(TAG, "MJPEG stream ended");
@@ -444,19 +444,49 @@ esp_err_t webserial_init(void) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.max_open_sockets = 5; // Increased for better stability
   config.max_req_hdr_len = 8192;
+  config.max_uri_handlers = 16; // Need more than default 8 for all endpoints
 
   if (httpd_start(&server, &config) == ESP_OK) {
-    httpd_uri_t uris[] = {
-        {"/", HTTP_GET, dashboard_handler, NULL},
-        {"/api/status", HTTP_GET, api_status_handler, NULL},
-        {"/api/action", HTTP_POST, api_action_handler, NULL},
-        {"/api/config", HTTP_POST, api_config_handler, NULL},
-        {"/api/ota", HTTP_POST, api_ota_handler, NULL},
-        {"/webserial", HTTP_GET, webserial_page_handler, NULL},
-        {"/webserial/logs", HTTP_GET, logs_handler, NULL},
-        {"/webserial/clear", HTTP_GET, clear_handler, NULL},
-        {"/snapshot", HTTP_GET, snapshot_handler, NULL},
-        {"/mjpeg", HTTP_GET, mjpeg_stream_handler, NULL}};
+    httpd_uri_t uris[] = {{.uri = "/",
+                           .method = HTTP_GET,
+                           .handler = dashboard_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/api/status",
+                           .method = HTTP_GET,
+                           .handler = api_status_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/api/action",
+                           .method = HTTP_POST,
+                           .handler = api_action_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/api/config",
+                           .method = HTTP_POST,
+                           .handler = api_config_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/api/ota",
+                           .method = HTTP_POST,
+                           .handler = api_ota_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/webserial",
+                           .method = HTTP_GET,
+                           .handler = webserial_page_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/webserial/logs",
+                           .method = HTTP_GET,
+                           .handler = logs_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/webserial/clear",
+                           .method = HTTP_GET,
+                           .handler = clear_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/snapshot",
+                           .method = HTTP_GET,
+                           .handler = snapshot_handler,
+                           .user_ctx = NULL},
+                          {.uri = "/mjpeg",
+                           .method = HTTP_GET,
+                           .handler = mjpeg_stream_handler,
+                           .user_ctx = NULL}};
     for (int i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
       httpd_register_uri_handler(server, &uris[i]);
     }
