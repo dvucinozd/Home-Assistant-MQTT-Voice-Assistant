@@ -18,7 +18,6 @@
 #include "esp_video_init.h"
 #include "linux/videodev2.h"
 
-
 static const char *TAG = "camera_mgr";
 
 // Camera state
@@ -70,13 +69,14 @@ esp_err_t camera_manager_init_with_config(const camera_config_t *config) {
   }
 
   // Initialize esp_video subsystem
+  // NOTE: Use I2C port 1 to avoid conflict with audio codec on port 0
   esp_video_init_csi_config_t csi_config = {
       .sccb_config =
           {
               .init_sccb = true,
               .i2c_config =
                   {
-                      .port = 0,
+                      .port = 1, // Port 1 - audio codec uses port 0
                       .scl_pin = s_config.i2c_scl_pin,
                       .sda_pin = s_config.i2c_sda_pin,
                   },

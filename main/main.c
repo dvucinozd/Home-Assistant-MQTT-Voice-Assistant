@@ -886,13 +886,15 @@ void app_main(void) {
 
     alarm_manager_init();
 
-    // Camera Init (optional - non-fatal if fails)
-    ESP_LOGI(TAG, "Initializing Camera...");
-    if (camera_manager_init() == ESP_OK) {
-      ESP_LOGI(TAG, "Camera initialized: %s", camera_manager_get_status());
-    } else {
-      ESP_LOGW(TAG, "Camera initialization failed (may not be connected)");
-    }
+    // Camera Init - DISABLED due to I2C bus conflict with audio codec
+    // Both I2C ports (0 and 1) are already used by BSP.
+    // TODO: Need to share I2C bus or use different pins for camera SCCB.
+    // ESP_LOGI(TAG, "Initializing Camera...");
+    // if (camera_manager_init() == ESP_OK) {
+    //   ESP_LOGI(TAG, "Camera initialized: %s", camera_manager_get_status());
+    // } else {
+    //   ESP_LOGW(TAG, "Camera initialization failed (may not be connected)");
+    // }
 
     local_music_player_register_callback(music_state_callback);
 
