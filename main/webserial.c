@@ -5,6 +5,7 @@
 
 #include "webserial.h"
 #include "bsp/esp32_p4_function_ev_board.h"
+#include "camera_manager.h"
 #include "esp_err.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -23,7 +24,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-
 
 static const char *TAG = "webserial";
 
@@ -350,6 +350,92 @@ static esp_err_t webserial_page_handler(httpd_req_t *req) {
   return httpd_resp_send(req, webserial_html, HTTPD_RESP_USE_STRLEN);
 }
 
+// Camera snapshot handler - returns single JPEG image
+static esp_err_t snapshot_handler(httpd_req_t *req) {
+  if (!camera_manager_is_initialized()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Camera not initialized");
+    return ESP_FAIL;
+  }
+
+  camera_frame_t frame;
+  esp_err_t ret = camera_manager_capture_jpeg(&frame);
+  if (ret != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Capture failed");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Content-Disposition",
+                     "inline; filename=snapshot.jpg");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  ret = httpd_resp_send(req, (const char *)frame.buf, frame.len);
+
+  camera_manager_return_frame(&frame);
+  return ret;
+}
+
+// MJPEG stream handler - multipart streaming for Frigate/VLC
+#define MJPEG_BOUNDARY "esp32p4frame"
+#define MJPEG_CONTENT_TYPE "multipart/x-mixed-replace; boundary=" MJPEG_BOUNDARY
+#define MJPEG_PART_HEADER                                                      \
+  "--" MJPEG_BOUNDARY                                                          \
+  "\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n\r\n"
+
+static esp_err_t mjpeg_stream_handler(httpd_req_t *req) {
+  if (!camera_manager_is_initialized()) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Camera not initialized");
+    return ESP_FAIL;
+  }
+
+  ESP_LOGI(TAG, "MJPEG stream started");
+
+  httpd_resp_set_type(req, MJPEG_CONTENT_TYPE);
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+
+  char part_header[128];
+  camera_frame_t frame;
+
+  while (1) {
+    esp_err_t ret = camera_manager_capture_jpeg(&frame);
+    if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "MJPEG capture failed, ending stream");
+      break;
+    }
+
+    // Send part header
+    int header_len = snprintf(part_header, sizeof(part_header),
+                              MJPEG_PART_HEADER, frame.len);
+    if (httpd_resp_send_chunk(req, part_header, header_len) != ESP_OK) {
+      camera_manager_return_frame(&frame);
+      break;
+    }
+
+    // Send JPEG data
+    if (httpd_resp_send_chunk(req, (const char *)frame.buf, frame.len) !=
+        ESP_OK) {
+      camera_manager_return_frame(&frame);
+      break;
+    }
+
+    // Send CRLF after frame
+    if (httpd_resp_send_chunk(req, "\r\n", 2) != ESP_OK) {
+      camera_manager_return_frame(&frame);
+      break;
+    }
+
+    camera_manager_return_frame(&frame);
+
+    // ~15 FPS for streaming (adjust as needed)
+    vTaskDelay(pdMS_TO_TICKS(66));
+  }
+
+  ESP_LOGI(TAG, "MJPEG stream ended");
+  return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 esp_err_t webserial_init(void) {
   if (server_running)
     return ESP_OK;
@@ -368,7 +454,9 @@ esp_err_t webserial_init(void) {
         {"/api/ota", HTTP_POST, api_ota_handler, NULL},
         {"/webserial", HTTP_GET, webserial_page_handler, NULL},
         {"/webserial/logs", HTTP_GET, logs_handler, NULL},
-        {"/webserial/clear", HTTP_GET, clear_handler, NULL}};
+        {"/webserial/clear", HTTP_GET, clear_handler, NULL},
+        {"/snapshot", HTTP_GET, snapshot_handler, NULL},
+        {"/mjpeg", HTTP_GET, mjpeg_stream_handler, NULL}};
     for (int i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
       httpd_register_uri_handler(server, &uris[i]);
     }
