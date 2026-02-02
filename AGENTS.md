@@ -173,40 +173,21 @@ Camera Integration (Completed - Feb 1, 2026)
 - `CONFIG_VFS_MAX_COUNT=20` (maximum allowed by Kconfig)
 - Required for video device registration
 
-### Frigate NVR Integration
+### Build Stability & Component Versions
 
-#### go2rtc Configuration
-```yaml
-go2rtc:
-  streams:
-    esp32_p4:
-      - ffmpeg:http://192.168.0.222/mjpeg#video=mjpeg#timeout=60
-```
-**Note**: `#timeout=60` parameter is critical for stream stability
+After testing various updates, the following configuration is pinned for stability:
+- **`esp_video`**: `0.8.*` (Required for current MIPI-CSI stability)
+- **`esp_cam_sensor`**: `0.9.0` (Must match `esp_video` generation)
+- **`esp-sr`**: `2.0.0` (Stable wake word detection)
+- **`led_strip`**: `2.5.0`
 
-#### Frigate Camera Config
-```yaml
-cameras:
-  esp32_p4:
-    enabled: true
-    ffmpeg:
-      hwaccel_args: []
-      inputs:
-        - path: rtsp://127.0.0.1:8554/esp32_p4
-          input_args: preset-rtsp-restream
-          roles:
-            - detect
-    detect:
-      width: 1280
-      height: 960
-      fps: 5
-    objects:
-      track:
-        - person
-        - cat
-    snapshots:
-      enabled: true
-```
+> [!IMPORTANT]
+> Do not attempt to update `esp_video` to version 1.0+ or `esp_cam_sensor` to 1.7.0+ without substantial camera driver refactoring, as they introduce breaking changes to the MIPI-CSI pipeline.
+
+### Next Session: Faza 3 - Face Detection
+- **Objective**: Integrate ESP-DL for face/object detection on the P4.
+- **Components**: `espressif/esp-dl`
+- **Tasks**: Create a background detection task that publishes results to MQTT.
 
 ### Known Issues & Workarounds
 
